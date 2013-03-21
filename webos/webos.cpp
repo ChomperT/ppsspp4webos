@@ -167,12 +167,10 @@ int main(int argc, char *argv[]) {
 
 	// Mac / Linux
 	char path[512];
-	const char *the_path = getenv("HOME");
-	if (!the_path) {
-		struct passwd* pwd = getpwuid(getuid());
-		if (pwd)
-			the_path = pwd->pw_dir;
-	}
+	const char *the_path = "/media/internal/psp";
+
+	mkdir(the_path, 0744);
+
 	strcpy(path, the_path);
 	if (path[strlen(path)-1] != '/')
 		strcat(path, "/");
