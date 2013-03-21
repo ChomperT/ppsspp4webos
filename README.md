@@ -14,6 +14,7 @@ Build Instruction
 To build this, you require:[WEBOS PDK][pdk-url]
 
 command:
+
 	git clone git://github.com/ChomperT/ppsspp4webos.git
 
 	cd ppsspp4webos/webos
