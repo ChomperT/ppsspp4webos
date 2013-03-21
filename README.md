@@ -11,7 +11,7 @@ by Chomper
 Build Instruction
 -----------------
 
-To build this, you require:[WEBOS PDK][pdk-url]
+To build this, you require: [WEBOS PDK][pdk-url]
 
 command:
 
@@ -21,7 +21,7 @@ command:
 
 	make
 
-To make ipk package you can use :[ipk-packager][ipk-packager]
+To make ipk package you can use: [ipk-packager][ipk-packager]
 
 
 [ipk-packager]: <https://code.google.com/p/ipk-packager>
