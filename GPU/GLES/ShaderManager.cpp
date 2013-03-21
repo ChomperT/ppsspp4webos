@@ -40,7 +40,6 @@ Shader::Shader(const char *code, uint32_t shaderType) {
 #endif
 	shader = glCreateShader(shaderType);
  	glShaderSource(shader, 1, &code, 0);
-	printf("%s\n", code);
 	glCompileShader(shader);
 	GLint success;
 	glGetShaderiv(shader, GL_COMPILE_STATUS, &success);

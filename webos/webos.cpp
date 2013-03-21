@@ -1,5 +1,6 @@
 #include <pwd.h>
 #include <unistd.h>
+#include <sys/stat.h> //for mkdir
 
 #include <string>
 #include <SDL/SDL.h>
@@ -171,6 +172,7 @@ int main(int argc, char *argv[]) {
 
 	mkdir(the_path, 0744);
 
+	setenv("HOME", "/media/internal", true);
 	strcpy(path, the_path);
 	if (path[strlen(path)-1] != '/')
 		strcat(path, "/");

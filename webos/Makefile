@@ -205,7 +205,6 @@ C_SRC 		= \
 		  ${SRC_ROOT}/Core/Util/BlockAllocator.cpp \
 		  ${SRC_ROOT}/Core/Util/PPGeDraw.cpp \
 		  ${SRC_ROOT}/Core/Util/ppge_atlas.cpp \
-		  ${SRC_ROOT}/git-version.cpp \
 		  ${SRC_ROOT}/GPU/GLES/DisplayListInterpreter.cpp \
 		  ${SRC_ROOT}/GPU/GLES/FragmentShaderGenerator.cpp \
 		  ${SRC_ROOT}/GPU/GLES/Framebuffer.cpp \
@@ -243,6 +242,6 @@ all: $(OBJS_C) $(OBJS_CXX)
 	$(CXX) $(OBJS_C) $(OBJS_CXX) -o $(APPNAME) -lz -lm -lrt -lpdl -lGLESv2 -lSDL -lpthread -static-libstdc++ -static-libgcc -Wl,-static -Wl,--allow-multiple-definition -Wl,--allow-shlib-undefined 
 
 clean:
-	rm -r $(OBJS_C) $(OBJS_CXX) 2>/dev/null || true
+	rm -r $(APPNAME) $(OBJS_C) $(OBJS_CXX) 2>/dev/null || true
 
 
