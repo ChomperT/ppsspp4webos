@@ -68,11 +68,11 @@ void CConfig::Load(const char *iniFileName)
 	graphics->Get("WindowZoom", &iWindowZoom, 1);
 	graphics->Get("BufferedRendering", &bBufferedRendering, false); //better for old devices
 	graphics->Get("HardwareTransform", &bHardwareTransform, true);
-	graphics->Get("LinearFiltering", &bLinearFiltering, false);
+	graphics->Get("LinearFiltering", &bLinearFiltering, true);
 	graphics->Get("SSAA", &SSAntiAliasing, 0);
-	graphics->Get("VBO", &bUseVBO, false);
+	graphics->Get("VBO", &bUseVBO, true);
 	graphics->Get("FrameSkip", &iFrameSkip, 0);
-	graphics->Get("UseMediaEngine", &bUseMediaEngine, true);
+	graphics->Get("UseMediaEngine", &bUseMediaEngine, false);
 #ifdef USING_GLES2
 	graphics->Get("AnisotropyLevel", &iAnisotropyLevel, 0);
 #else
