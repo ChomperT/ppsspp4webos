@@ -3,7 +3,14 @@
 #include <sys/stat.h> //for mkdir
 
 #include <string>
+#ifdef WEBOS
 #include <SDL/SDL.h>
+#include <PDL.h>
+#include "../Core/Config.h" //check landscape for ui screen scale;
+#else
+#include "SDL.h"
+#endif
+
 #include "base/display.h"
 #include "base/logging.h"
 #include "base/timeutil.h"
@@ -13,7 +20,7 @@
 #include "input/input_state.h"
 #include "base/NativeApp.h"
 #include "net/resolve.h"
-#include <PDL.h>
+
 
 
 // Simple implementations of System functions
@@ -73,7 +80,9 @@ const int buttonMappings[14] = {
 	SDLK_m,         //MENU
 	SDLK_ESCAPE,	//BACK
 };
-
+#ifdef WEBOS
+bool menu = false; //sorry about this.....
+#endif
 void SimulateGamepad(const uint8 *keys, InputState *input) {
 	input->pad_buttons = 0;
 	input->pad_lstick_x = 0;
@@ -101,6 +110,13 @@ void SimulateGamepad(const uint8 *keys, InputState *input) {
 		input->pad_rstick_x=-1;
 	else if (keys[SDLK_KP6])
 		input->pad_rstick_x=1;
+#ifdef WEBOS
+	if (menu)
+	{
+		input->pad_buttons |= (1 << 12);
+		menu = false;
+	}
+#endif
 }
 
 extern void mixaudio(void *userdata, Uint8 *stream, int len) {
@@ -110,37 +126,22 @@ extern void mixaudio(void *userdata, Uint8 *stream, int len) {
 int main(int argc, char *argv[]) {
 	std::string app_name;
 	std::string app_name_nice;
-
-	float zoom = 1.0f;
-	bool tablet = false;
-	bool aspect43 = false;
-	const char *zoomenv = getenv("ZOOM");
-	const char *tabletenv = getenv("TABLET");
-	const char *ipad = getenv("IPAD");
+	bool landscape;
 
 	PDL_Init(0);
-	if (zoomenv) {
-		zoom = atof(zoomenv);
-	}
-	
-	bool landscape;
+	PDL_GesturesEnable(SDL_TRUE);
+	PDL_BannerMessagesEnable(SDL_FALSE);
+
 	NativeGetAppInfo(&app_name, &app_name_nice, &landscape);
 	
 	// Change these to temporarily test other resolutions.
-	aspect43 = false;
-	tablet = false;
-	float density = 1.0f;
-	//zoom = 1.5f;
 
 
 	PDL_ScreenMetrics out;
 	PDL_SetOrientation(PDL_ORIENTATION_90);
 	PDL_GetScreenMetrics(&out);
-	int x, y;
-	x = out.horizontalPixels;
-	y = out.verticalPixels;
-	pixel_xres = x > y ? x : y;
-	pixel_yres = x > y ? y : x;
+	pixel_xres = out.horizontalPixels;;
+	pixel_yres = out.verticalPixels;
 
 	net::Init();
 
@@ -179,20 +180,15 @@ int main(int argc, char *argv[]) {
 
 	NativeInit(argc, (const char **)argv, path, "/tmp", "BADCOFFEE");
 
-	dp_xres = (float)pixel_xres * density / zoom;
-	dp_yres = (float)pixel_yres * density / zoom;
+	dp_xres = (float)pixel_xres;
+	dp_yres = (float)pixel_yres;
 	pixel_in_dps = (float)pixel_xres / dp_xres;
 
 	NativeInitGraphics();
 	glstate.viewport.set(0, 0, pixel_xres, pixel_yres);
 	glstate.cullFaceMode.set(GL_FRONT_AND_BACK);
 
-	float dp_xscale = (float)dp_xres / pixel_xres;
-	float dp_yscale = (float)dp_yres / pixel_yres;
-
-
-	printf("Pixels: %i x %i\n", pixel_xres, pixel_yres);
-	printf("Virtual pixels: %i x %i\n", dp_xres, dp_yres);
+	printf("Pixels: %i x %i, v: %d, %d\n", pixel_xres, pixel_yres, dp_xres, dp_yres);
 
 	SDL_AudioSpec fmt;
 	fmt.freq = 44100;
@@ -214,6 +210,11 @@ int main(int argc, char *argv[]) {
 	int framecount = 0;
 	bool nextFrameMD = 0;
 	float t = 0, lastT = 0;
+	int x, y;
+	float mx, my;
+	x = dp_xres;
+	y = dp_yres;
+
 	while (true) {
 		input_state.accelerometer_valid = false;
 		input_state.mouse_valid = true;
@@ -221,34 +222,51 @@ int main(int argc, char *argv[]) {
 
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
-			float mx = event.motion.x * dp_xscale;
-			float my = event.motion.y * dp_yscale;
-			fflush(stdout);
 
-			if (event.type == SDL_QUIT) {
+#ifdef WEBOS
+			if(g_Config.bLandScape) {
+				dp_xres = y;
+				dp_yres = x;
+				mx = event.motion.y;
+				my = x - event.motion.x;
+			} else {
+				dp_xres = x;
+				dp_yres = y;
+				mx = event.motion.x;
+				my = event.motion.y;
+			}
+#else
+			mx = event.motion.x;
+			my = event.motion.y;
+#endif
+			switch(event.type) {
+			case SDL_QUIT:
 				quitRequested = 1;
-			} else if (event.type == SDL_KEYDOWN) {
-/*				if (event.key.keysym.sym == SDLK_ESCAPE) {
-					quitRequested = 1;
-				}*/
-			} else if (event.type == SDL_MOUSEMOTION) {
+				break;
+			case SDL_MOUSEMOTION:
 				input_state.pointer_x[0] = mx;
 				input_state.pointer_y[0] = my;
 				NativeTouch(0, mx, my, 0, TOUCH_MOVE);
-			} else if (event.type == SDL_MOUSEBUTTONDOWN) {
+				break;
+			case SDL_MOUSEBUTTONDOWN:
 				if (event.button.button == SDL_BUTTON_LEFT) {
-					//input_state.mouse_buttons_down = 1;
 					input_state.pointer_down[0] = true;
 					nextFrameMD = true;
 					NativeTouch(0, mx, my, 0, TOUCH_DOWN);
 				}
-			} else if (event.type == SDL_MOUSEBUTTONUP) {
+				break;
+			case SDL_MOUSEBUTTONUP:
 				if (event.button.button == SDL_BUTTON_LEFT) {
 					input_state.pointer_down[0] = false;
 					nextFrameMD = false;
-					//input_state.mouse_buttons_up = 1;
 					NativeTouch(0, mx, my, 0, TOUCH_UP);
 				}
+				break;
+			case SDL_ACTIVEEVENT:
+				if(event.active.state == SDL_APPACTIVE)
+					if(!event.active.gain)
+						menu = true;
+				break;
 			}
 		}
 
@@ -256,7 +274,6 @@ int main(int argc, char *argv[]) {
 			break;
 
 		const uint8 *keys = (const uint8 *)SDL_GetKeyState(NULL);
-
 		SimulateGamepad(keys, &input_state);
 		UpdateInputState(&input_state);
 		NativeUpdate(input_state);

@@ -46,7 +46,6 @@ public:
 	int a_normal;
 	int a_weight0123;
 	int a_weight4567;
-	int a_rotate;
 
 	int u_tex;
 	int u_proj;

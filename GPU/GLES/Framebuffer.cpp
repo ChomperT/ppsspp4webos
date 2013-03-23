@@ -72,18 +72,27 @@ void CenterRect(float *x, float *y, float *w, float *h,
 	{
 		*x = 0;
 		*y = 0;
-		*w = frameW;
-		*h = frameH;
+		*w = g_Config.bLandScape ? frameW : frameH;
+		*h = g_Config.bLandScape ? frameH : frameW;
 		return;
 	}
-
-	float origRatio = origW/origH;
+#ifdef WEBOS
+	if(g_Config.bLandScape)
+	{
+		*y = 0;
+		*h = frameH;
+		*w =  0.566666666666667 * (*h);
+		*x = (frameW - *w) / 2;
+		return;
+	}
+#endif
+	float origRatio = 1.76470588235294;//origW/origH;
 	float frameRatio = frameW/frameH;
+
 
 	if (origRatio > frameRatio)
 	{
 		// Image is wider than frame. Center vertically.
-		float scale = origW / frameW;
 		*x = 0.0f;
 		*w = frameW;
 		*h = frameW / origRatio;
@@ -92,7 +101,6 @@ void CenterRect(float *x, float *y, float *w, float *h,
 	else
 	{
 		// Image is taller than frame. Center horizontally.
-		float scale = origH / frameH;
 		*y = 0.0f;
 		*h = frameH;
 		*w = frameH * origRatio;

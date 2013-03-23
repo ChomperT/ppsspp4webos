@@ -173,7 +173,6 @@ void GenerateVertexShader(int prim, char *buffer) {
 		WRITE(p, "attribute vec3 a_position;\n");
 	else
 		WRITE(p, "attribute vec4 a_position;\n");  // need to pass the fog coord in w
-//	WRITE(p, "attribute float a_rot_angle;\n"); //global Rotate;
 
 	if (doTexture) WRITE(p, "attribute vec2 a_texcoord;\n");
 	if (hasColor) {
@@ -261,10 +260,20 @@ void GenerateVertexShader(int prim, char *buffer) {
 		if (enableFog) {
 			WRITE(p, "  v_fogdepth = a_position.w;\n");
 		}
-		if (gstate.isModeThrough())	{
-			WRITE(p, "  gl_Position = u_proj_through * vec4(a_position.xyz, 1.0);\n");
+		if (gstate.isModeThrough()){
+			if(!g_Config.bLandScape)
+				WRITE(p, "  gl_Position = u_proj_through * vec4(a_position.xyz, 1.0);\n");
+			else {
+				WRITE(p, "  vec4 v = u_proj_through * vec4(a_position.xyz, 1.0);\n");
+				WRITE(p, "  gl_Position = vec4(v.y, -v.x, v.z, v.w);\n");
+			}
 		} else {
-			WRITE(p, "  gl_Position = u_proj * vec4(a_position.xyz, 1.0);\n");
+			if(!g_Config.bLandScape)
+				WRITE(p, "  gl_Position= u_proj * vec4(a_position.xyz, 1.0);\n");
+			else {
+				WRITE(p, "  vec4 v = u_proj * vec4(a_position.xyz, 1.0);\n");
+				WRITE(p, "  gl_Position = vec4(v.y, -v.x, v.z, v.w);\n");
+			}
 		}
 	} else {
 		// Step 1: World Transform / Skinning
@@ -418,7 +427,12 @@ void GenerateVertexShader(int prim, char *buffer) {
 			WRITE(p, "  v_fogdepth = (viewPos.z + u_fogcoef.x) * u_fogcoef.y;\n");
 
 		// Step 4: Final view and projection transforms.
-		WRITE(p, "  gl_Position = u_proj * viewPos;\n");
+		if(!g_Config.bLandScape)
+			WRITE(p, "  gl_Position = u_proj * viewPos;\n");
+		else {
+			WRITE(p, "  vec4 v = u_proj * viewPos;\n");
+			WRITE(p, "  gl_Position = vec4(v.y, -v.x, v.z, v.w);\n");
+		}
 	}
 	WRITE(p, "}\n");
 

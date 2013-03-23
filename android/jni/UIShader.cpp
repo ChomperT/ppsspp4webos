@@ -38,12 +38,18 @@ static const char modulate_vs[] =
 	"attribute vec4 a_color;\n"
 	"attribute vec2 a_texcoord0;\n"
 	"uniform mat4 u_worldviewproj;\n"
+	"uniform int u_rotate;\n"
 	"varying vec2 v_texcoord0;\n"
 	"varying vec4 v_color;\n"
 	"void main() {\n"
 	"  v_texcoord0 = a_texcoord0;\n"
 	"  v_color = a_color;\n"
-	"  gl_Position = u_worldviewproj * a_position;\n"
+	"  if(u_rotate == 0)\n"
+	"      gl_Position = u_worldviewproj * a_position;\n"
+	"  else {\n"
+	"      vec4 v = u_worldviewproj * a_position;\n"
+	"      gl_Position = vec4(v.y, -v.x, v.z, v.w);\n"
+	"  }\n"
 	"}\n";
 
 static const char plain_fs[] =

@@ -80,6 +80,9 @@ public:
 	bool bShowDebugStats;
 	bool bLargeControls;
 	bool bAccelerometerToAnalogHoriz;
+#ifdef WEBOS
+	bool bLandScape;
+#endif
 
 	// Control
 	std::map<int,int> iMappingMap; // Can be used differently depending on systems

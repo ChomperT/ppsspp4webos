@@ -83,6 +83,10 @@ void CConfig::Load(const char *iniFileName)
 	graphics->Get("StretchToDisplay", &bStretchToDisplay, false);
 	graphics->Get("TrueColor", &bTrueColor, true);
 
+#ifdef
+	graphics->Get("LandScape", &bLandScape, false);
+#endif
+
 	IniFile::Section *sound = iniFile.GetOrCreateSection("Sound");
 	sound->Get("Enable", &bEnableSound, true);
 
@@ -146,6 +150,9 @@ void CConfig::Save()
 		graphics->Set("FullScreen", bFullScreen);
 		graphics->Set("StretchToDisplay", bStretchToDisplay);
 		graphics->Set("TrueColor", bTrueColor);
+#ifdef WEBOS
+		graphics->set("LandScape", bLandScape);
+#endif
 
 		IniFile::Section *sound = iniFile.GetOrCreateSection("Sound");
 		sound->Set("Enable", bEnableSound);

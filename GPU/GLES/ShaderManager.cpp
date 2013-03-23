@@ -126,7 +126,6 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 	}
 
 	a_position = glGetAttribLocation(program, "a_position");
-	a_rotate = glGetAttribLocation(program, "a_rot_angle");
 	a_color0 = glGetAttribLocation(program, "a_color0");
 	a_color1 = glGetAttribLocation(program, "a_color1");
 	a_texcoord = glGetAttribLocation(program, "a_texcoord");

@@ -31,6 +31,7 @@ struct GLSLProgram : public GfxResourceHolder {
 	GLint u_fog;	// rgb = color, a = density
 	GLint u_sundir;
 	GLint u_camerapos;
+	GLint u_rotate;
 
 	GLint a_position;
 	GLint a_color;

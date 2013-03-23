@@ -6,8 +6,8 @@ APPNAME		= ppsspp4webos
 SRC_ROOT	= ..
 
 HEADERS		= -I$(SRC_ROOT) -I$(SRC_ROOT)/native -I$(SRC_ROOT)/Common 
-CXXFLAGS 	= -Ofast -D_NDEBUG -DARM -DUSING_GLES2 -Wno-multichar -fno-strict-aliasing -ffast-math -Wno-psabi -D_LARGEFILE64_SOURCE=1 -D_FILE_OFFSET_BITS=64 -std=gnu++0x -fbuiltin
-CFLAGS 	= -Ofast -D_NDEBUG -DARM -DUSING_GLES2 -Wno-multichar -fno-strict-aliasing -ffast-math -Wno-psabi -D_LARGEFILE64_SOURCE=1 -D_FILE_OFFSET_BITS=64 
+CXXFLAGS 	= -Ofast -DWEBOS -D_NDEBUG -DARM -DUSING_GLES2 -Wno-multichar -fno-strict-aliasing -ffast-math -Wno-psabi -D_LARGEFILE64_SOURCE=1 -D_FILE_OFFSET_BITS=64 -std=gnu++0x -fbuiltin
+CFLAGS 		= -Ofast -DWEBOS -D_NDEBUG -DARM -DUSING_GLES2 -Wno-multichar -fno-strict-aliasing -ffast-math -Wno-psabi -D_LARGEFILE64_SOURCE=1 -D_FILE_OFFSET_BITS=64 
 
 C_SRC 		= \
 		  ${SRC_ROOT}/native/ext/stb_image/stb_image.c \
@@ -15,8 +15,8 @@ C_SRC 		= \
 		  ${SRC_ROOT}/ext/libkirk/AES.c \
 		  ${SRC_ROOT}/ext/libkirk/amctrl.c \
 		  ${SRC_ROOT}/ext/libkirk/SHA1.c \
-		  ${SRC_ROOT}/ext/libkirk/bn.c \
-		  ${SRC_ROOT}/ext/libkirk/ec.c \
+		  ${SRC_ROOT}/ext/libkirk/bnc.c \
+		  ${SRC_ROOT}/ext/libkirk/ecc.c \
 		  ${SRC_ROOT}/ext/libkirk/kirk_engine.c 
 
  CPP_SRC		= \

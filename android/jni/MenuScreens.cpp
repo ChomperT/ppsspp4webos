@@ -251,6 +251,7 @@ void InGameMenuScreen::render() {
 	int y = 50;
 	int stride = 40;
 	int columnw = 420;
+
 	UICheckBox(GEN_ID, x, y += stride, "Show Debug Statistics", ALIGN_TOPLEFT, &g_Config.bShowDebugStats);
 	UICheckBox(GEN_ID, x + columnw, y, "Show FPS", ALIGN_TOPLEFT, &g_Config.bShowFPSCounter);
 
@@ -322,8 +323,14 @@ void SettingsScreen::render() {
 	int y = 30;
 	int stride = 40;
 	int columnw = 420;
+#ifdef WEBOS
+	UICheckBox(GEN_ID, x, y += stride, "LandScape 3pi (WebOS Only)", ALIGN_TOPLEFT, &g_Config.bLandScape);
+	UICheckBox(GEN_ID, x + columnw, y, "Linear Filtering", ALIGN_TOPLEFT, &g_Config.bLinearFiltering);
+	UICheckBox(GEN_ID, x, y += stride, "Sound Emulation", ALIGN_TOPLEFT, &g_Config.bEnableSound);
+#else
 	UICheckBox(GEN_ID, x, y += stride, "Sound Emulation", ALIGN_TOPLEFT, &g_Config.bEnableSound);
 	UICheckBox(GEN_ID, x + columnw, y, "Linear Filtering", ALIGN_TOPLEFT, &g_Config.bLinearFiltering);
+#endif
 	if (UICheckBox(GEN_ID, x, y += stride, "Buffered Rendering", ALIGN_TOPLEFT, &g_Config.bBufferedRendering)) {
 		if (gpu)
 			gpu->Resized();

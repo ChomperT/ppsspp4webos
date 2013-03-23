@@ -145,7 +145,7 @@ void EmuScreen::update(InputState &input)
 		{PAD_BUTTON_LBUMPER, CTRL_LTRIGGER},
 		{PAD_BUTTON_RBUMPER, CTRL_RTRIGGER},
 		{PAD_BUTTON_START, CTRL_START},
-		{PAD_BUTTON_SELECT, CTRL_SELECT},
+		{PAD_BUTTON_SELECT, CTRL_SELECT}
 	};
 
 	for (int i = 0; i < 12; i++) {
