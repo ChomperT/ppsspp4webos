@@ -66,7 +66,7 @@ void CConfig::Load(const char *iniFileName)
 	graphics->Get("ShowFPSCounter", &bShowFPSCounter, false);
 	graphics->Get("DisplayFramebuffer", &bDisplayFramebuffer, false);
 	graphics->Get("WindowZoom", &iWindowZoom, 1);
-	graphics->Get("BufferedRendering", &bBufferedRendering, true);
+	graphics->Get("BufferedRendering", &bBufferedRendering, false); //better for old devices
 	graphics->Get("HardwareTransform", &bHardwareTransform, true);
 	graphics->Get("LinearFiltering", &bLinearFiltering, false);
 	graphics->Get("SSAA", &SSAntiAliasing, 0);
@@ -83,7 +83,7 @@ void CConfig::Load(const char *iniFileName)
 	graphics->Get("StretchToDisplay", &bStretchToDisplay, false);
 	graphics->Get("TrueColor", &bTrueColor, true);
 
-#ifdef
+#ifdef WEBOS
 	graphics->Get("LandScape", &bLandScape, false);
 #endif
 
@@ -151,7 +151,7 @@ void CConfig::Save()
 		graphics->Set("StretchToDisplay", bStretchToDisplay);
 		graphics->Set("TrueColor", bTrueColor);
 #ifdef WEBOS
-		graphics->set("LandScape", bLandScape);
+		graphics->Set("LandScape", bLandScape);
 #endif
 
 		IniFile::Section *sound = iniFile.GetOrCreateSection("Sound");
