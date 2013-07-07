@@ -5,7 +5,10 @@
 #include <cmath>
 #include <cstring>
 
+#include "base/colorutil.h"
 #include "ui/ui.h"
+#include "ui/ui_context.h"
+#include "gfx/texture.h"
 #include "gfx/texture_atlas.h"
 #include "gfx_es2/draw_buffer.h"
 
@@ -74,12 +77,18 @@ bool UIRegionHit(int i, int x, int y, int w, int h, int margin) {
 	}
 }
 
-void UIBegin() {
+void UIBegin(const GLSLProgram *shader) {
 	for (int i = 0; i < MAX_POINTERS; i++)
 		uistate.hotitem[i] = 0;
-	ui_draw2d.Begin();
-	ui_draw2d_front.Begin();
+	ui_draw2d.Begin(shader);
+	ui_draw2d_front.Begin(shader);
 }
+
+void UIFlush() {
+	ui_draw2d.Flush();
+	ui_draw2d_front.Flush();
+}
+
 
 void UIEnd() {
 	for (int i = 0; i < MAX_POINTERS; i++) {
@@ -96,6 +105,8 @@ void UIEnd() {
 
 	if (uistate.ui_tick > 0)
 		uistate.ui_tick--;
+	ui_draw2d.Flush();
+	ui_draw2d_front.Flush();
 }
 
 void UIText(int x, int y, const char *text, uint32_t color, float scale, int align) {
@@ -119,8 +130,9 @@ void UIText(int font, const LayoutManager &layout, const char *text, uint32_t co
 	ui_draw2d.SetFontScale(1.0f, 1.0f);
 }
 
-int UIButton(int id, const LayoutManager &layout, float w, const char *text, int button_align) {
-	float h = themeAtlas->images[theme.buttonImage].h;
+int UIButton(int id, const LayoutManager &layout, float w, float h, const char *text, int button_align) {
+	if (h == 0.0f)
+		h = themeAtlas->images[theme.buttonImage].h;
 
 	float x, y;
 	layout.GetPos(&w, &h, &x, &y);
@@ -164,7 +176,10 @@ int UIButton(int id, const LayoutManager &layout, float w, const char *text, int
 
 	// Render button
 
-	ui_draw2d.DrawImage2GridH((txOffset && theme.buttonSelected) ? theme.buttonSelected : theme.buttonImage, x, y, x + w);
+	if (h == themeAtlas->images[theme.buttonImage].h)
+		ui_draw2d.DrawImage2GridH((txOffset && theme.buttonSelected) ? theme.buttonSelected : theme.buttonImage, x, y, x + w);
+	else
+		ui_draw2d.DrawImage4Grid((txOffset && theme.buttonSelected) ? theme.buttonSelected : theme.buttonImage, x, y, x + w, y + h);
 	ui_draw2d.DrawTextShadow(theme.uiFont, text, x + w/2, y + h/2 + txOffset, 0xFFFFFFFF, ALIGN_HCENTER | ALIGN_VCENTER);
 
 	uistate.lastwidget = id;
@@ -199,7 +214,7 @@ int UIImageButton(int id, const LayoutManager &layout, float w, int image, int b
 				// Button is merely 'hot'
 			}
 		} else {
-			// button is not hot, but it may be active§
+			// button is not hot, but it may be active
 		}
 
 		// If button is hot and active, but mouse button is not
@@ -220,9 +235,92 @@ int UIImageButton(int id, const LayoutManager &layout, float w, int image, int b
 	return clicked;
 }
 
+int UITextureButton(UIContext *ctx, int id, const LayoutManager &layout, float w, float h, Texture *texture, int button_align, uint32_t color, int drop_shadow)	// uses current UI atlas for fetching images.
+{
+	float x, y;
+	layout.GetPos(&w, &h, &x, &y);
+
+	if (button_align & ALIGN_HCENTER) x -= w / 2;
+	if (button_align & ALIGN_VCENTER) y -= h / 2;
+	if (button_align & ALIGN_RIGHT) x -= w;
+	if (button_align & ALIGN_BOTTOMRIGHT) y -= h;
+
+	int txOffset = 0;
+	int clicked = 0;
+	for (int i = 0; i < MAX_POINTERS; i++) {
+		// Check whether the button should be hot, use a generous margin for touch ease
+		if (UIRegionHit(i, x, y, w, h, 8)) {
+			uistate.hotitem[i] = id;
+			if (uistate.activeitem[i] == 0 && uistate.mousedown[i])
+				uistate.activeitem[i] = id;
+		}
+
+		if (uistate.hotitem[i] == id) {
+			if (uistate.activeitem[i] == id) {
+				// Button is both 'hot' and 'active'
+				txOffset = 2;
+			} else {
+				// Button is merely 'hot'
+			}
+		} else {
+			// button is not hot, but it may be active
+		}
+
+		// If button is hot and active, but mouse button is not
+		// down, the user must have clicked the button.
+		if (uistate.mousedown[i] == 0 &&
+			uistate.hotitem[i] == id &&
+			uistate.activeitem[i] == id) {
+				clicked = 1;
+		}
+	}
+	if (texture) {
+		float tw = texture->Width();
+		float th = texture->Height();
+
+		// Adjust position so we don't stretch the image vertically or horizontally.
+		// TODO: Add a param to specify fit?  The below assumes it's never too wide.
+		float nw = h * tw / th;
+		x += (w - nw) / 2.0f;
+		w = nw;
+	}
+
+	// Render button
+	int dropsize = 10;
+	if (drop_shadow && texture)
+	{
+		if (txOffset) {
+			dropsize = 3;
+			y += txOffset * 2;
+		}
+		ui_draw2d.DrawImage4Grid(drop_shadow, x - dropsize, y, x+w + dropsize, y+h+dropsize*1.5, 
+			alphaMul(color,0.5f), 1.0f);
+		ui_draw2d.Flush(true);
+	}
+
+	if (texture) {
+		texture->Bind(0);
+	} else {
+		ui_draw2d.DrawImage2GridH(theme.buttonImage, x, y, x + w, color);
+		ui_draw2d.Flush();
+
+		Texture::Unbind();
+	}
+	ui_draw2d.DrawTexRect(x, y, x+w, y+h, 0, 0, 1, 1, color);
+
+	ui_draw2d.Flush();
+	ctx->RebindTexture();
+
+	uistate.lastwidget = id;
+	return clicked;
+}
 
 int UICheckBox(int id, int x, int y, const char *text, int align, bool *value) {
-	const int h = 64;
+#ifdef _WIN32
+	const int h = 32;
+#else
+	const int h = 48;
+#endif
 	float tw, th;
 	ui_draw2d.MeasureText(theme.uiFont, text, &tw, &th);
 	int w = themeAtlas->images[theme.checkOn].w + UI_SPACE + tw;
@@ -367,7 +465,7 @@ int UIList::Do(int id, int x, int y, int w, int h, UIListAdapter *adapter) {
 	}
 
 	int itemHeight = adapter->itemHeight(0);
-	int numItems = adapter->getCount();
+	int numItems = (int)adapter->getCount();
 
 	// Cap total inertia
 	if (inertiaY > 20) inertiaY = 20;

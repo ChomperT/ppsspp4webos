@@ -5,7 +5,7 @@
 
 namespace DSound
 {
-#define BUFSIZE 8192
+#define BUFSIZE 0x4000
 #define MAXWAIT 20   //ms
 
 	CRITICAL_SECTION soundCriticalSection;
@@ -14,8 +14,8 @@ namespace DSound
 
 	StreamCallback callback;
 
-	IDirectSound8 *ds;
-	IDirectSoundBuffer *dsBuffer;
+	IDirectSound8 *ds = NULL;
+	IDirectSoundBuffer *dsBuffer = NULL;
 
 	int bufferSize; // bytes
 	int totalRenderedBytes;
@@ -49,7 +49,7 @@ namespace DSound
 		pcmwf.wBitsPerSample = 16; 
 
 		dsbdesc.dwSize = sizeof(DSBUFFERDESC); 
-		dsbdesc.dwFlags = DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_STICKYFOCUS; // //DSBCAPS_CTRLPAN | DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLFREQUENCY; 
+		dsbdesc.dwFlags = DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_GLOBALFOCUS; // //DSBCAPS_CTRLPAN | DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLFREQUENCY; 
 		dsbdesc.dwBufferBytes = bufferSize = BUFSIZE;  //FIX32(pcmwf.wf.nAvgBytesPerSec);   //change to set buffer size
 		dsbdesc.lpwfxFormat = (WAVEFORMATEX *)&pcmwf; 
 
@@ -108,12 +108,12 @@ namespace DSound
 
 	int currentPos;
 	int lastPos;
-	short realtimeBuffer[1024*1024];
+	short realtimeBuffer[BUFSIZE * 2];
 
-	DWORD WINAPI soundThread(void *)
+	unsigned int WINAPI soundThread(void *)
 	{
-		currentPos=0;
-		lastPos=0;
+		currentPos = 0;
+		lastPos = 0;
 		//writeDataToBuffer(0,realtimeBuffer,bufferSize);
 		//  dsBuffer->Lock(0, bufferSize, (void **)&p1, &num1, (void **)&p2, &num2, 0); 
 
@@ -123,17 +123,18 @@ namespace DSound
 		{
 			EnterCriticalSection(&soundCriticalSection);
 
-			dsBuffer->GetCurrentPosition((DWORD *)&currentPos,0);
-			int numBytesToRender = RoundDown128(ModBufferSize(currentPos-lastPos)); 
+			dsBuffer->GetCurrentPosition((DWORD *)&currentPos, 0);
+			int numBytesToRender = RoundDown128(ModBufferSize(currentPos - lastPos)); 
 
 			//renderStuff(numBytesToRender/2);
 			//if (numBytesToRender>bufferSize/2) numBytesToRender=0;
 
-			if (numBytesToRender>=256)
+			if (numBytesToRender >= 256)
 			{
-				int numBytesRendered = 4 * (*callback)(realtimeBuffer,numBytesToRender>>2,16,44100,2);
+				int numBytesRendered = 4 * (*callback)(realtimeBuffer, numBytesToRender >> 2, 16, 44100, 2);
 
-				writeDataToBuffer(lastPos,(char *)realtimeBuffer,numBytesRendered);
+				if (numBytesRendered != 0)
+					writeDataToBuffer(lastPos, (char *)realtimeBuffer, numBytesRendered);
 
 				currentPos = ModBufferSize(lastPos + numBytesRendered);
 				totalRenderedBytes += numBytesRendered;
@@ -147,7 +148,7 @@ namespace DSound
 		}
 		dsBuffer->Stop();
 
-		threadData=2;
+		threadData = 2;
 		return 0;
 	}
 
@@ -174,8 +175,7 @@ namespace DSound
 		memset(p1,0,num1);
 		dsBuffer->Unlock(p1,num1,0,0);
 		totalRenderedBytes = -bufferSize;
-		DWORD h;
-		hThread = CreateThread(0,0,soundThread,0,0,&h);
+		hThread = (HANDLE)_beginthreadex(0, 0, soundThread, 0, 0, 0);
 		SetThreadPriority(hThread, THREAD_PRIORITY_ABOVE_NORMAL);
 		return true;
 	}
@@ -195,8 +195,10 @@ namespace DSound
 		/*
 		while (threadData!=2)
 			;*/
-		dsBuffer->Release();
-		ds->Release();
+		if (dsBuffer != NULL)
+			dsBuffer->Release();
+		if (ds != NULL)
+			ds->Release();
 
 		CloseHandle(soundSyncEvent);
 	}

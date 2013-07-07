@@ -23,6 +23,7 @@
 #include "GPU/ge_constants.h"
 #include "Core/System.h"
 #include "Core/Config.h"
+#include "Core/Reporting.h"
 #include "DisplayListInterpreter.h"
 #include "ShaderManager.h"
 #include "TextureCache.h"
@@ -91,11 +92,32 @@ static const GLushort stencilOps[] = {
 	GL_KEEP, // reserved
 };
 
+static GLenum blendColor2Func(u32 fix) {
+	if (fix == 0xFFFFFF)
+		return GL_ONE;
+	if (fix == 0)
+		return GL_ZERO;
+
+	Vec3 fix3 = Vec3(fix);
+	if (fix3.x >= 0.99 && fix3.y >= 0.99 && fix3.z >= 0.99)
+		return GL_ONE;
+	else if (fix3.x <= 0.01 && fix3.y <= 0.01 && fix3.z <= 0.01)
+		return GL_ZERO;
+	return GL_INVALID_ENUM;
+}
+
+static bool blendColorSimilar(Vec3 a, Vec3 b, float margin = 0.1f) {
+	Vec3 diff = a - b;
+	if (fabsf(diff.x) <= margin && fabsf(diff.y) <= margin && fabsf(diff.z) <= margin)
+		return true;
+	return false;
+}
+
 void TransformDrawEngine::ApplyDrawState(int prim) {
 	// TODO: All this setup is soon so expensive that we'll need dirty flags, or simply do it in the command writes where we detect dirty by xoring. Silly to do all this work on every drawcall.
 
 	if (gstate_c.textureChanged) {
-		if ((gstate.textureMapEnable & 1) && !gstate.isModeClear()) {
+		if (gstate.textureMapEnable & 1) {
 			textureCache_->SetTexture();
 		}
 		gstate_c.textureChanged = false;
@@ -104,7 +126,7 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 	// Set cull
 	bool wantCull = !gstate.isModeClear() && !gstate.isModeThrough() && prim != GE_PRIM_RECTANGLES && gstate.isCullEnabled();
 	glstate.cullFace.set(wantCull);
-	if (wantCull) 
+	if (wantCull)
 		glstate.cullFaceMode.set(cullingMode[gstate.getCullMode()]);
 
 	// TODO: The top bit of the alpha channel should be written to the stencil bit somehow. This appears to require very expensive multipass rendering :( Alternatively, one could do a
@@ -126,91 +148,110 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 		if (blendFuncA > GE_SRCBLEND_FIXA) blendFuncA = GE_SRCBLEND_FIXA;
 		if (blendFuncB > GE_DSTBLEND_FIXB) blendFuncB = GE_DSTBLEND_FIXB;
 
-		glstate.blendEquation.set(eqLookup[blendFuncEq]);
-
-		if (blendFuncA != GE_SRCBLEND_FIXA && blendFuncB != GE_DSTBLEND_FIXB) {
-			// All is valid, no blendcolor needed
-			glstate.blendFunc.set(aLookup[blendFuncA], bLookup[blendFuncB]);
-		} else {
-			GLuint glBlendFuncA = blendFuncA == GE_SRCBLEND_FIXA ? GL_INVALID_ENUM : aLookup[blendFuncA];
-			GLuint glBlendFuncB = blendFuncB == GE_DSTBLEND_FIXB ? GL_INVALID_ENUM : bLookup[blendFuncB];
-			u32 fixA = gstate.getFixA();
-			u32 fixB = gstate.getFixB();
-			// Shortcut by using GL_ONE where possible, no need to set blendcolor
-			if (glBlendFuncA == GL_INVALID_ENUM && blendFuncA == GE_SRCBLEND_FIXA) {
-				if (fixA == 0xFFFFFF)
-					glBlendFuncA = GL_ONE;
-				else if (fixA == 0)
-					glBlendFuncA = GL_ZERO;
-			} 
-			if (glBlendFuncB == GL_INVALID_ENUM && blendFuncB == GE_DSTBLEND_FIXB) {
-				if (fixB == 0xFFFFFF)
-					glBlendFuncB = GL_ONE;
-				else if (fixB == 0)
-					glBlendFuncB = GL_ZERO;
-			}
+		// Shortcut by using GL_ONE where possible, no need to set blendcolor
+		GLuint glBlendFuncA = blendFuncA == GE_SRCBLEND_FIXA ? blendColor2Func(gstate.getFixA()) : aLookup[blendFuncA];
+		GLuint glBlendFuncB = blendFuncB == GE_DSTBLEND_FIXB ? blendColor2Func(gstate.getFixB()) : bLookup[blendFuncB];
+		if (blendFuncA == GE_SRCBLEND_FIXA || blendFuncB == GE_DSTBLEND_FIXB) {
+			Vec3 fixA = Vec3(gstate.getFixA());
+			Vec3 fixB = Vec3(gstate.getFixB());
 			if (glBlendFuncA == GL_INVALID_ENUM && glBlendFuncB != GL_INVALID_ENUM) {
 				// Can use blendcolor trivially.
-				const float blendColor[4] = {(fixA & 0xFF)/255.0f, ((fixA >> 8) & 0xFF)/255.0f, ((fixA >> 16) & 0xFF)/255.0f, 1.0f};
+				const float blendColor[4] = {fixA.x, fixA.y, fixA.z, 1.0f};
 				glstate.blendColor.set(blendColor);
 				glBlendFuncA = GL_CONSTANT_COLOR;
 			} else if (glBlendFuncA != GL_INVALID_ENUM && glBlendFuncB == GL_INVALID_ENUM) {
 				// Can use blendcolor trivially.
-				const float blendColor[4] = {(fixB & 0xFF)/255.0f, ((fixB >> 8) & 0xFF)/255.0f, ((fixB >> 16) & 0xFF)/255.0f, 1.0f};
+				const float blendColor[4] = {fixB.x, fixB.y, fixB.z, 1.0f};
 				glstate.blendColor.set(blendColor);
 				glBlendFuncB = GL_CONSTANT_COLOR;
-			} else if (glBlendFuncA == GL_INVALID_ENUM && glBlendFuncB == GL_INVALID_ENUM) {  // Should also check for approximate equality
-				if (fixA == (fixB ^ 0xFFFFFF)) {
+			} else if (glBlendFuncA == GL_INVALID_ENUM && glBlendFuncB == GL_INVALID_ENUM) {
+				if (blendColorSimilar(fixA, Vec3(1.0f) - fixB)) {
 					glBlendFuncA = GL_CONSTANT_COLOR;
 					glBlendFuncB = GL_ONE_MINUS_CONSTANT_COLOR;
-					const float blendColor[4] = {(fixA & 0xFF)/255.0f, ((fixA >> 8) & 0xFF)/255.0f, ((fixA >> 16) & 0xFF)/255.0f, 1.0f};
+					const float blendColor[4] = {fixA.x, fixA.y, fixA.z, 1.0f};
 					glstate.blendColor.set(blendColor);
-				} else if (fixA == fixB) {
+				} else if (blendColorSimilar(fixA, fixB)) {
 					glBlendFuncA = GL_CONSTANT_COLOR;
 					glBlendFuncB = GL_CONSTANT_COLOR;
-					const float blendColor[4] = {(fixA & 0xFF)/255.0f, ((fixA >> 8) & 0xFF)/255.0f, ((fixA >> 16) & 0xFF)/255.0f, 1.0f};
+					const float blendColor[4] = {fixA.x, fixA.y, fixA.z, 1.0f};
 					glstate.blendColor.set(blendColor);
 				} else {
+					static bool didReportBlend = false;
+					if (!didReportBlend)
+						Reporting::ReportMessage("ERROR INVALID blendcolorstate: FixA=%06x FixB=%06x FuncA=%i FuncB=%i", gstate.getFixA(), gstate.getFixB(), gstate.getBlendFuncA(), gstate.getBlendFuncB());
+					didReportBlend = true;
+
 					DEBUG_LOG(HLE, "ERROR INVALID blendcolorstate: FixA=%06x FixB=%06x FuncA=%i FuncB=%i", gstate.getFixA(), gstate.getFixB(), gstate.getBlendFuncA(), gstate.getBlendFuncB());
-					glBlendFuncA = GL_ONE;
-					glBlendFuncB = GL_ONE;
+					// Let's approximate, at least.  Close is better than totally off.
+					const bool nearZeroA = blendColorSimilar(fixA, 0.0f, 0.25f);
+					const bool nearZeroB = blendColorSimilar(fixB, 0.0f, 0.25f);
+					if (nearZeroA || blendColorSimilar(fixA, 1.0f, 0.25f)) {
+						glBlendFuncA = nearZeroA ? GL_ZERO : GL_ONE;
+						glBlendFuncB = GL_CONSTANT_COLOR;
+						const float blendColor[4] = {fixB.x, fixB.y, fixB.z, 1.0f};
+						glstate.blendColor.set(blendColor);
+					// We need to pick something.  Let's go with A as the fixed color.
+					} else {
+						glBlendFuncA = GL_CONSTANT_COLOR;
+						glBlendFuncB = nearZeroB ? GL_ZERO : GL_ONE;
+						const float blendColor[4] = {fixA.x, fixA.y, fixA.z, 1.0f};
+						glstate.blendColor.set(blendColor);
+					}
 				}
 			}
-			// At this point, through all paths above, glBlendFuncA and glBlendFuncB will be set somehow.
-
-			glstate.blendFunc.set(glBlendFuncA, glBlendFuncB);
 		}
+
+		// At this point, through all paths above, glBlendFuncA and glBlendFuncB will be set right somehow.
+		glstate.blendFunc.set(glBlendFuncA, glBlendFuncB);
+		glstate.blendEquation.set(eqLookup[blendFuncEq]);
 	}
 
 	// Set Dither
-	glstate.dither.set(gstate.isDitherEnabled());
-
+	if (gstate.isDitherEnabled()) {
+		glstate.dither.enable();
+		glstate.dither.set(GL_TRUE);
+	} else
+		glstate.dither.disable();
 
 	// Set ColorMask/Stencil/Depth
 	if (gstate.isModeClear()) {
+
+		// Depth Test
+		bool depthMask = (gstate.clearmode >> 10) & 1;
+		if (gstate.isDepthTestEnabled()) {
+			glstate.depthTest.enable();
+			glstate.depthFunc.set(GL_ALWAYS);
+			glstate.depthWrite.set(depthMask ? GL_TRUE : GL_FALSE);
+		} else {
+			glstate.depthTest.enable();
+			glstate.depthFunc.set(GL_ALWAYS);
+			glstate.depthWrite.set(GL_TRUE);
+		}
+
+		// Color Test
 		bool colorMask = (gstate.clearmode >> 8) & 1;
 		bool alphaMask = (gstate.clearmode >> 9) & 1;
-		bool depthMask = ((gstate.clearmode >> 10) & 1) || !(gstate.zmsk & 1);
-		
 		glstate.colorMask.set(colorMask, colorMask, colorMask, alphaMask);
 
-		glstate.stencilTest.enable();
-		glstate.stencilOp.set(GL_REPLACE, GL_REPLACE, GL_REPLACE);
-		glstate.stencilFunc.set(GL_ALWAYS, 0, 0xFF);
+		// Stencil Test
+		if (alphaMask) {
+			glstate.stencilTest.enable();
+			glstate.stencilOp.set(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+			glstate.stencilFunc.set(GL_ALWAYS, 0, 0xFF);
+		} else {
+			glstate.stencilTest.disable();
+		}
 
-		glstate.depthTest.enable();
-		glstate.depthFunc.set(GL_ALWAYS);
-		glstate.depthWrite.set(depthMask ? GL_TRUE : GL_FALSE);
+	} else {
 
-	} else {	
+		// Depth Test
 		if (gstate.isDepthTestEnabled()) {
 			glstate.depthTest.enable();
 			glstate.depthFunc.set(ztests[gstate.getDepthTestFunc()]);
 			glstate.depthWrite.set(gstate.isDepthWriteEnabled() ? GL_TRUE : GL_FALSE);
-		} else {
+		} else 
 			glstate.depthTest.disable();
-		}
-
+		
 		// PSP color/alpha mask is per bit but we can only support per byte.
 		// But let's do that, at least. And let's try a threshold.
 		bool rmask = (gstate.pmskc & 0xFF) < 128;
@@ -218,18 +259,19 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 		bool bmask = ((gstate.pmskc >> 16) & 0xFF) < 128;
 		bool amask = (gstate.pmska & 0xFF) < 128;
 		glstate.colorMask.set(rmask, gmask, bmask, amask);
-
+		
+		// Stencil Test
 		if (gstate.isStencilTestEnabled()) {
 			glstate.stencilTest.enable();
-			glstate.stencilFunc.set(ztests[gstate.stenciltest & 0x7],  // func
-				(gstate.stenciltest >> 8) & 0xFF,  // ref
+			glstate.stencilFunc.set(ztests[gstate.stenciltest & 0x7],// comparison function
+				(gstate.stenciltest >> 8) & 0xFF,  // reference value
 				(gstate.stenciltest >> 16) & 0xFF);  // mask
 			glstate.stencilOp.set(stencilOps[gstate.stencilop & 0x7],  // stencil fail
 				stencilOps[(gstate.stencilop >> 8) & 0x7],  // depth fail
 				stencilOps[(gstate.stencilop >> 16) & 0x7]); // depth pass
-		} else {
+		} else 
 			glstate.stencilTest.disable();
-		}
+		
 	}
 
 	float renderWidthFactor, renderHeightFactor;
@@ -238,8 +280,8 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 	if (g_Config.bBufferedRendering) {
 		renderX = 0;
 		renderY = 0;
-	  renderWidth = framebufferManager_->GetRenderWidth();
-	  renderHeight = framebufferManager_->GetRenderHeight();
+		renderWidth = framebufferManager_->GetRenderWidth();
+		renderHeight = framebufferManager_->GetRenderHeight();
 		renderWidthFactor = (float)renderWidth / framebufferManager_->GetTargetWidth();
 		renderHeightFactor = (float)renderHeight / framebufferManager_->GetTargetHeight();
 	} else {
@@ -260,9 +302,9 @@ void TransformDrawEngine::ApplyDrawState(int prim) {
 	int scissorY2 = (gstate.scissor2 >> 10) & 0x3FF;
 
 	// This is a bit of a hack as the render buffer isn't always that size
-	if (scissorX1 == 0 && scissorY1 == 0 &&
-		  scissorX2 >= gstate_c.curRTWidth - 1 &&
-			scissorY2 >= gstate_c.curRTHeight - 1) {
+	if (scissorX1 == 0 && scissorY1 == 0 
+		&& scissorX2 >= (int) (gstate_c.curRTWidth - 1) 
+		&& scissorY2 >= (int) (gstate_c.curRTHeight - 1)) {
 		glstate.scissorTest.disable();
 	} else {
 		glstate.scissorTest.enable();

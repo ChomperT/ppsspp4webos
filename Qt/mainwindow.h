@@ -3,7 +3,7 @@
 
 #include <QMainWindow>
 #include <QTranslator>
-
+#include <QTimer>
 #include "Core/Core.h"
 #include "input/input_state.h"
 #include "debugger_disasm.h"
@@ -33,7 +33,6 @@ public:
 	CoreState GetNextState() { return nextState; }
 
 	void ShowMemory(u32 addr);
-	void Update();
 	void UpdateMenus();
 
 protected:
@@ -45,6 +44,7 @@ protected:
 public slots:
 	void Boot();
 	void CoreEmitWait(bool);
+	void Update();
 
 private slots:
 	// File
@@ -79,7 +79,6 @@ private slots:
 	void on_action_CPUInterpreter_triggered();
 	void on_action_OptionsFastMemory_triggered();
 	void on_action_OptionsIgnoreIllegalReadsWrites_triggered();
-	void on_actionUse_MediaEngine_triggered();
 
 	// Controls
 	void on_action_OptionsControls_triggered();
@@ -105,7 +104,6 @@ private slots:
 	void on_action_OptionsHardwareTransform_triggered();
 	void on_action_OptionsUseVBO_triggered();
 	void on_action_OptionsVertexCache_triggered();
-	void on_action_OptionsWireframe_triggered();
 	void on_action_OptionsDisplayRawFramebuffer_triggered();
 	void on_actionFrameskip_triggered();
 
@@ -152,8 +150,10 @@ private:
 	Ui::MainWindow *ui;
 
 	QtEmuGL *emugl;
+	QTimer timer;
 	CoreState nextState;
 	InputState input_state;
+	GlobalUIState lastUIState;
 
 	Debugger_Disasm *dialogDisasm;
 	Debugger_Memory *memoryWindow;

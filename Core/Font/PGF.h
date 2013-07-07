@@ -91,8 +91,7 @@ struct PGFFontStyle {
 };
 
 
-class Glyph {
-public:
+struct Glyph {
 	int x;
 	int y;
 	int w;
@@ -107,6 +106,17 @@ public:
 	int xAdjustH, xAdjustV;
 	int yAdjustH, yAdjustV;
 	u32 ptr;
+};
+
+struct GlyphImage {
+	FontPixelFormat pixelFormat;
+	s32 xPos64;
+	s32 yPos64;
+	u16 bufWidth;
+	u16 bufHeight;
+	u16 bytesPerLine;
+	u16 pad;
+	u32 bufferPtr;
 };
 
 #pragma pack(push,1)
@@ -244,7 +254,7 @@ public:
 
 	bool GetCharInfo(int charCode, PGFCharInfo *ci);
 	void GetFontInfo(PGFFontInfo *fi);
-	void DrawCharacter(u32 base, int bpl, int bufWidth, int bufHeight, int x, int y, int clipX, int clipY, int clipWidth, int clipHeight, int pixelformat, int charCode, int altCharCode, int glyphType);
+	void DrawCharacter(const GlyphImage *image, int clipX, int clipY, int clipWidth, int clipHeight, int charCode, int altCharCode, int glyphType);
 
 	void DoState(PointerWrap &p);
 
@@ -275,10 +285,6 @@ private:
 	// Unused
 	std::vector<int> charmapCompressionTable1[2];
 	std::vector<int> charmapCompressionTable2[2];
-
-	u8 *charMap;
-	u8 *shadowCharMap;
-	u8 *charPointerTable;
 
 	std::vector<int> charmap_compr;
 	std::vector<int> charmap;

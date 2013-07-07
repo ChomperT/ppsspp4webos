@@ -28,25 +28,26 @@ public:
 	~NullGPU();
 	virtual void InitClear() {}
 	virtual void ExecuteOp(u32 op, u32 diff);
-	virtual void Continue();
-	virtual void DrawSync(int mode);
-	virtual void EnableInterrupts(bool enable) {
-		interruptsEnabled_ = enable;
-	}
+	virtual u32  DrawSync(int mode);
 
 	virtual void BeginFrame() {}
 	virtual void SetDisplayFramebuffer(u32 framebuf, u32 stride, int format) {}
 	virtual void CopyDisplayToOutput() {}
 	virtual void UpdateStats();
-	virtual void InvalidateCache(u32 addr, int size);
-	virtual void InvalidateCacheHint(u32 addr, int size);
+	virtual void InvalidateCache(u32 addr, int size, GPUInvalidationType type);
+	virtual void UpdateMemory(u32 dest, u32 src, int size);
+	virtual void ClearCacheNextFrame() {};
 	virtual void Flush() {}
 
 	virtual void DeviceLost() {}
 	virtual void DumpNextFrame() {}
 
 	virtual void Resized() {}
+	virtual void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) {
+		primaryInfo = "NULL";
+		fullInfo = "NULL";
+	}
 
-private:
-	bool interruptsEnabled_;
+protected:
+	virtual void FastRunLoop(DisplayList &list);
 };

@@ -34,7 +34,7 @@
 #include <list>
 #include <set>
 #ifndef __SYMBIAN32__
-#ifdef IOS
+#if defined(IOS) || defined(MACGNUSTD)
 #include <tr1/type_traits>
 #else
 #include <type_traits>
@@ -45,7 +45,7 @@
 #include "FileUtil.h"
 #include "../ext/snappy/snappy-c.h"
 
-#if defined(ANDROID) || defined(IOS)
+#if defined(IOS) || defined(MACGNUSTD)
 namespace std {
 	using tr1::is_pointer;
 }
@@ -84,7 +84,7 @@ class PointerWrap
 		static void DoArray(PointerWrap *p, T *x, int count)
 		{
 			for (int i = 0; i < count; ++i)
-				p->DoClass(x[i]);
+				p->Do(x[i]);
 		}
 
 		static void Do(PointerWrap *p, T &x)
@@ -115,16 +115,30 @@ public:
 		MODE_VERIFY, // compare
 	};
 
+	enum Error {
+		ERROR_NONE = 0,
+		ERROR_WARNING = 1,
+		ERROR_FAILURE = 2,
+	};
+
 	u8 **ptr;
 	Mode mode;
+	Error error;
 
 public:
-	PointerWrap(u8 **ptr_, Mode mode_) : ptr(ptr_), mode(mode_) {}
-	PointerWrap(unsigned char **ptr_, int mode_) : ptr((u8**)ptr_), mode((Mode)mode_) {}
+	PointerWrap(u8 **ptr_, Mode mode_) : ptr(ptr_), mode(mode_), error(ERROR_NONE) {}
+	PointerWrap(unsigned char **ptr_, int mode_) : ptr((u8**)ptr_), mode((Mode)mode_), error(ERROR_NONE) {}
 
 	void SetMode(Mode mode_) {mode = mode_;}
 	Mode GetMode() const {return mode;}
 	u8 **GetPPtr() {return ptr;}
+	void SetError(Error error_)
+	{
+		if (error < error_)
+			error = error_;
+		if (error > ERROR_WARNING)
+			mode = PointerWrap::MODE_MEASURE;
+	}
 
 	void DoVoid(void *data, int size)
 	{
@@ -187,7 +201,8 @@ public:
 				typename std::map<K, T>::iterator itr = x.begin();
 				while (number > 0)
 				{
-					Do(itr->first);
+					K first = itr->first;
+					Do(first);
 					Do(itr->second);
 					--number;
 					++itr;
@@ -556,7 +571,7 @@ public:
 		if(mode == PointerWrap::MODE_READ && cookie != arbitraryNumber)
 		{
 			PanicAlertT("Error: After \"%s\", found %d (0x%X) instead of save marker %d (0x%X). Aborting savestate load...", prevName, cookie, cookie, arbitraryNumber, arbitraryNumber);
-			mode = PointerWrap::MODE_MEASURE;
+			SetError(ERROR_FAILURE);
 		}
 	}
 };
@@ -567,12 +582,18 @@ class CChunkFileReader
 public:
 	// Load file template
 	template<class T>
-	static bool Load(const std::string& _rFilename, int _Revision, T& _class) 
+	static bool Load(const std::string& _rFilename, int _Revision, T& _class, std::string* _failureReason) 
 	{
 		INFO_LOG(COMMON, "ChunkReader: Loading %s" , _rFilename.c_str());
+		_failureReason->clear();
+		_failureReason->append("LoadStateWrongVersion");
 
-		if (!File::Exists(_rFilename))
+		if (!File::Exists(_rFilename)) {
+			_failureReason->clear();
+			_failureReason->append("LoadStateDoesntExist");
+			ERROR_LOG(COMMON, "ChunkReader: File doesn't exist");
 			return false;
+		}
 				
 		// Check file size
 		const u64 fileSize = File::GetSize(_rFilename);
@@ -642,7 +663,7 @@ public:
 		delete[] buf;
 		
 		INFO_LOG(COMMON, "ChunkReader: Done loading %s" , _rFilename.c_str());
-		return true;
+		return p.error != p.ERROR_FAILURE;
 	}
 	
 	// Save file template
@@ -650,6 +671,7 @@ public:
 	static bool Save(const std::string& _rFilename, int _Revision, T& _class)
 	{
 		INFO_LOG(COMMON, "ChunkReader: Writing %s" , _rFilename.c_str());
+
 		File::IOFile pFile(_rFilename, "wb");
 		if (!pFile)
 		{
@@ -712,7 +734,7 @@ public:
 		
 		INFO_LOG(COMMON,"ChunkReader: Done writing %s", 
 				 _rFilename.c_str());
-		return true;
+		return p.error != p.ERROR_FAILURE;
 	}
 	
 	template <class T>

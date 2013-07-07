@@ -44,6 +44,13 @@ enum {
 	FB_USAGE_TEXTURE = 4,
 };
 
+enum {	
+	GPU_VENDOR_NVIDIA = 1,
+	GPU_VENDOR_AMD = 2,
+	GPU_VENDOR_INTEL = 3,
+	GPU_VENDOR_ARM = 4,
+	GPU_VENDOR_UNKNOWN = 0
+};
 
 struct VirtualFramebuffer {
 	int last_frame_used;
@@ -54,10 +61,16 @@ struct VirtualFramebuffer {
 	int z_stride;
 
 	// There's also a top left of the drawing region, but meh...
+
+	// width/height: The detected size of the current framebuffer.
 	u16 width;
 	u16 height;
+	// renderWidth/renderHeight: The actual size we render at. May be scaled to render at higher resolutions.
 	u16 renderWidth;
 	u16 renderHeight;
+	// bufferWidth/bufferHeight: The actual (but non scaled) size of the buffer we render to. May only be bigger than width/height.
+	u16 bufferWidth;
+	u16 bufferHeight;
 
 	u16 usageFlags;
 
@@ -70,6 +83,22 @@ struct VirtualFramebuffer {
 
 void CenterRect(float *x, float *y, float *w, float *h,
 								float origW, float origH, float frameW, float frameH);
+
+#ifndef USING_GLES2
+// Simple struct for asynchronous PBO readbacks
+struct AsyncPBO {
+	GLuint handle;
+	u32 maxSize;
+
+	u32 fb_address;
+	u32 stride;
+	u32 height;
+	u32 size;
+	int format;
+	bool reading;
+};
+
+#endif
 
 class ShaderManager;
 
@@ -86,7 +115,7 @@ public:
 	}
 
 	void DrawPixels(const u8 *framebuf, int pixelFormat, int linesize);
-	void DrawActiveTexture(float x, float y, float w, float h, bool flip = false);
+	void DrawActiveTexture(float x, float y, float w, float h, bool flip = false, float uscale = 1.0f, float vscale = 1.0f, GLSLProgram *program = 0);
 
 	void DestroyAllFBOs();
 	void DecimateFBOs();
@@ -94,8 +123,13 @@ public:
 	void BeginFrame();
 	void EndFrame();
 	void Resized();
+	void DeviceLost();
 	void CopyDisplayToOutput();
 	void SetRenderFrameBuffer();  // Uses parameters computed from gstate
+	void UpdateFromMemory(u32 addr, int size);
+
+	void ReadFramebufferToMemory(VirtualFramebuffer *vfb);
+
 	// TODO: Break out into some form of FBO manager
 	VirtualFramebuffer *GetDisplayFBO();
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, int format);
@@ -108,9 +142,17 @@ public:
 	int GetTargetWidth() const { return currentRenderVfb_ ? currentRenderVfb_->width : 480; }
 	int GetTargetHeight() const { return currentRenderVfb_ ? currentRenderVfb_->height : 272; }
 
-private:
-	// Deletes old FBOs.
+	u32 PrevDisplayFramebufAddr() {
+		return prevDisplayFramebuf_ ? (0x04000000 | prevDisplayFramebuf_->fb_address) : 0;
+	}
+	u32 DisplayFramebufAddr() {
+		return displayFramebuf_ ? (0x04000000 | displayFramebuf_->fb_address) : 0;
+	}
 
+	void DestroyFramebuf(VirtualFramebuffer *vfb);
+
+private:
+	u32 ramDisplayFramebufPtr_;  // workaround for MotoGP insanity
 	u32 displayFramebufPtr_;
 	u32 displayStride_;
 	int displayFormat_;
@@ -118,13 +160,29 @@ private:
 	VirtualFramebuffer *displayFramebuf_;
 	VirtualFramebuffer *prevDisplayFramebuf_;
 	VirtualFramebuffer *prevPrevDisplayFramebuf_;
+	int frameLastFramebufUsed;
 
-	std::list<VirtualFramebuffer *> vfbs_;
+	std::vector<VirtualFramebuffer *> vfbs_;
 
 	VirtualFramebuffer *currentRenderVfb_;
 
+	// Used by ReadFramebufferToMemory
+	void BlitFramebuffer_(VirtualFramebuffer *src, VirtualFramebuffer *dst, bool flip = false, float upscale = 1.0f, float vscale = 1.0f);
+#ifndef USING_GLES2
+	void PackFramebufferGL_(VirtualFramebuffer *vfb);
+#endif
+	void PackFramebufferGLES_(VirtualFramebuffer *vfb);
+	int gpuVendor;
+	std::vector<VirtualFramebuffer *> bvfbs_; // blitting FBOs
+
+#ifndef USING_GLES2
+	AsyncPBO *pixelBufObj_; //this isn't that large
+	u8 currentPBO_;
+#endif
+
 	// Used by DrawPixels
-	unsigned int backbufTex;
+	unsigned int drawPixelsTex_;
+	int drawPixelsTexFormat_;
 
 	u8 *convBuf;
 	GLSLProgram *draw2dprogram;
@@ -134,4 +192,5 @@ private:
 	ShaderManager *shaderManager_;
 
 	bool resized_;
+	bool useBufferedRendering_;
 };

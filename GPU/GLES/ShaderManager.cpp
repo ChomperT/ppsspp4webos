@@ -28,12 +28,14 @@
 
 #include "math/lin/matrix4x4.h"
 
-#include "../GPUState.h"
-#include "../ge_constants.h"
-#include "ShaderManager.h"
-#include "TransformPipeline.h"
+#include "Core/Reporting.h"
+#include "GPU/GPUState.h"
+#include "GPU/ge_constants.h"
+#include "GPU/GLES/ShaderManager.h"
+#include "GPU/GLES/TransformPipeline.h"
+#include "UI/OnScreenDisplay.h"
 
-Shader::Shader(const char *code, uint32_t shaderType) {
+Shader::Shader(const char *code, uint32_t shaderType, bool useHWTransform) : failed_(false), useHWTransform_(useHWTransform) {
 	source_ = code;
 #ifdef SHADERLOG
 	OutputDebugString(code);
@@ -52,13 +54,24 @@ Shader::Shader(const char *code, uint32_t shaderType) {
 		ERROR_LOG(G3D, "Error in shader compilation!\n");
 		ERROR_LOG(G3D, "Info log: %s\n", infoLog);
 		ERROR_LOG(G3D, "Shader source:\n%s\n", (const char *)code);
+		Reporting::ReportMessage("Error in shader compilation: info: %s / code: %s", infoLog, (const char *)code);
+#ifdef SHADERLOG
+		OutputDebugString(infoLog);
+#endif
+		failed_ = true;
+		shader = 0;
 	} else {
 		DEBUG_LOG(G3D, "Compiled shader:\n%s\n", (const char *)code);
 	}
 }
 
-LinkedShader::LinkedShader(Shader *vs, Shader *fs)
-		: program(0), dirtyUniforms(0) {
+Shader::~Shader() {
+	if (shader)
+		glDeleteShader(shader);
+}
+
+LinkedShader::LinkedShader(Shader *vs, Shader *fs, bool useHWTransform)
+		: program(0), dirtyUniforms(0), useHWTransform_(useHWTransform) {
 	program = glCreateProgram();
 	glAttachShader(program, vs->shader);
 	glAttachShader(program, fs->shader);
@@ -75,6 +88,11 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 			ERROR_LOG(G3D, "Could not link program:\n %s", buf);
 			ERROR_LOG(G3D, "VS:\n%s", vs->source().c_str());
 			ERROR_LOG(G3D, "FS:\n%s", fs->source().c_str());
+#ifdef SHADERLOG
+			OutputDebugString(buf);
+			OutputDebugString(vs->source().c_str());
+			OutputDebugString(fs->source().c_str());
+#endif
 			delete [] buf;	// we're dead!
 		}
 		return;
@@ -95,11 +113,16 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 	u_view = glGetUniformLocation(program, "u_view");
 	u_world = glGetUniformLocation(program, "u_world");
 	u_texmtx = glGetUniformLocation(program, "u_texmtx");
-	for (int i = 0; i < 8; i++) {
-		char name[64];
+	numBones = gstate.getNumBoneWeights();
+#ifdef USE_BONE_ARRAY
+	u_bone = glGetUniformLocation(program, "u_bone");
+#else
+	for (int i = 0; i < numBones; i++) {
+		char name[10];
 		sprintf(name, "u_bone%i", i);
 		u_bone[i] = glGetUniformLocation(program, name);
 	}
+#endif
 
 	// Lighting, texturing
 	u_ambient = glGetUniformLocation(program, "u_ambient");
@@ -117,6 +140,10 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 		u_lightdir[i] = glGetUniformLocation(program, temp);
 		sprintf(temp, "u_lightatt%i", i);
 		u_lightatt[i] = glGetUniformLocation(program, temp);
+		sprintf(temp, "u_lightangle%i", i);
+		u_lightangle[i] = glGetUniformLocation(program, temp);
+		sprintf(temp, "u_lightspotCoef%i", i);
+		u_lightspotCoef[i] = glGetUniformLocation(program, temp);
 		sprintf(temp, "u_lightambient%i", i);
 		u_lightambient[i] = glGetUniformLocation(program, temp);
 		sprintf(temp, "u_lightdiffuse%i", i);
@@ -130,8 +157,8 @@ LinkedShader::LinkedShader(Shader *vs, Shader *fs)
 	a_color1 = glGetAttribLocation(program, "a_color1");
 	a_texcoord = glGetAttribLocation(program, "a_texcoord");
 	a_normal = glGetAttribLocation(program, "a_normal");
-	a_weight0123 = glGetAttribLocation(program, "a_weight0123");
-	a_weight4567 = glGetAttribLocation(program, "a_weight4567");
+	a_weight0123 = glGetAttribLocation(program, "a_w1");
+	a_weight4567 = glGetAttribLocation(program, "a_w2");
 
 	glUseProgram(program);
 
@@ -147,8 +174,7 @@ LinkedShader::~LinkedShader() {
 }
 
 // Utility
-static void SetColorUniform3(int uniform, u32 color)
-{
+static void SetColorUniform3(int uniform, u32 color) {
 	const float col[3] = {
 		((color & 0xFF)) / 255.0f,
 		((color & 0xFF00) >> 8) / 255.0f,
@@ -157,8 +183,7 @@ static void SetColorUniform3(int uniform, u32 color)
 	glUniform3fv(uniform, 1, col);
 }
 
-static void SetColorUniform3Alpha(int uniform, u32 color, u8 alpha)
-{
+static void SetColorUniform3Alpha(int uniform, u32 color, u8 alpha) {
 	const float col[4] = {
 		((color & 0xFF)) / 255.0f,
 		((color & 0xFF00) >> 8) / 255.0f,
@@ -168,8 +193,18 @@ static void SetColorUniform3Alpha(int uniform, u32 color, u8 alpha)
 	glUniform4fv(uniform, 1, col);
 }
 
-static void SetColorUniform3ExtraFloat(int uniform, u32 color, float extra)
-{
+// This passes colors unscaled (e.g. 0 - 255 not 0 - 1.)
+static void SetColorUniform3Alpha255(int uniform, u32 color, u8 alpha) {
+	const float col[4] = {
+		(float)((color & 0xFF)),
+		(float)((color & 0xFF00) >> 8),
+		(float)((color & 0xFF0000) >> 16),
+		(float)alpha
+	};
+	glUniform4fv(uniform, 1, col);
+}
+
+static void SetColorUniform3ExtraFloat(int uniform, u32 color, float extra) {
 	const float col[4] = {
 		((color & 0xFF)) / 255.0f,
 		((color & 0xFF00) >> 8) / 255.0f,
@@ -179,8 +214,7 @@ static void SetColorUniform3ExtraFloat(int uniform, u32 color, float extra)
 	glUniform4fv(uniform, 1, col);
 }
 
-static void SetMatrix4x3(int uniform, const float *m4x3) {
-	float m4x4[16];
+static void ConvertMatrix4x3To4x4(const float *m4x3, float *m4x4) {
 	m4x4[0] = m4x3[0];
 	m4x4[1] = m4x3[1];
 	m4x4[2] = m4x3[2];
@@ -197,6 +231,11 @@ static void SetMatrix4x3(int uniform, const float *m4x3) {
 	m4x4[13] = m4x3[10];
 	m4x4[14] = m4x3[11];
 	m4x4[15] = 1.0f;
+}
+
+static void SetMatrix4x3(int uniform, const float *m4x3) {
+	float m4x4[16];
+	ConvertMatrix4x3To4x4(m4x3, m4x4);
 	glUniformMatrix4fv(uniform, 1, GL_FALSE, m4x4);
 }
 
@@ -251,7 +290,7 @@ void LinkedShader::updateUniforms() {
 		SetColorUniform3(u_texenv, gstate.texenvcolor);
 	}
 	if (u_alphacolorref != -1 && (dirtyUniforms & DIRTY_ALPHACOLORREF)) {
-		SetColorUniform3Alpha(u_alphacolorref, gstate.colorref, (gstate.alphatest >> 8) & 0xFF);
+		SetColorUniform3Alpha255(u_alphacolorref, gstate.colorref, (gstate.alphatest >> 8) & 0xFF);
 	}
 	if (u_colormask != -1 && (dirtyUniforms & DIRTY_COLORMASK)) {
 		SetColorUniform3(u_colormask, gstate.colormask);
@@ -278,8 +317,10 @@ void LinkedShader::updateUniforms() {
 			uvscaleoff[2] /= gstate_c.curTextureWidth;
 			uvscaleoff[3] /= gstate_c.curTextureHeight;
 		} else {
-			uvscaleoff[0] *= 2.0f;
-			uvscaleoff[1] *= 2.0f;
+			static const float rescale[4] = {2.0f, 2*127.5f/128.f, 2*32767.5f/32768.f, 2.0f};
+			float factor = rescale[(gstate.vertType & GE_VTYPE_TC_MASK) >> GE_VTYPE_TC_SHIFT];
+			uvscaleoff[0] *= factor;
+			uvscaleoff[1] *= factor;
 		}
 		glUniform4fv(u_uvscaleoffset, 1, uvscaleoff);
 	}
@@ -294,11 +335,41 @@ void LinkedShader::updateUniforms() {
 	if (u_texmtx != -1 && (dirtyUniforms & DIRTY_TEXMATRIX)) {
 		SetMatrix4x3(u_texmtx, gstate.tgenMatrix);
 	}
-	for (int i = 0; i < 8; i++) {
-		if (u_bone[i] != -1 && (dirtyUniforms & (DIRTY_BONEMATRIX0 << i))) {
-			SetMatrix4x3(u_bone[i], gstate.boneMatrix + 12 * i);
+
+	// TODO: Could even set all bones in one go if they're all dirty.
+#ifdef USE_BONE_ARRAY
+	if (u_bone != -1) {
+		float allBones[8 * 16];
+
+		bool allDirty = true;
+		for (int i = 0; i < numBones; i++) {
+			if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
+				ConvertMatrix4x3To4x4(gstate.boneMatrix + 12 * i, allBones + 16 * i);
+			} else {
+				allDirty = false;
+			}
+		}
+		if (allDirty) {
+			// Set them all with one call
+			glUniformMatrix4fv(u_bone, numBones, GL_FALSE, allBones);
+		} else {
+			// Set them one by one. Could try to coalesce two in a row etc but too lazy.
+			for (int i = 0; i < numBones; i++) {
+				if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
+					glUniformMatrix4fv(u_bone + i, 1, GL_FALSE, allBones + 16 * i);
+				}
+			}
 		}
 	}
+#else
+	float bonetemp[16];
+	for (int i = 0; i < numBones; i++) {
+		if (dirtyUniforms & (DIRTY_BONEMATRIX0 << i)) {
+			ConvertMatrix4x3To4x4(gstate.boneMatrix + 12 * i, bonetemp);
+			glUniformMatrix4fv(u_bone[i], 1, GL_FALSE, bonetemp);
+		}
+	}
+#endif
 
 	// Lighting
 	if (u_ambient != -1 && (dirtyUniforms & DIRTY_AMBIENT)) {
@@ -319,9 +390,26 @@ void LinkedShader::updateUniforms() {
 
 	for (int i = 0; i < 4; i++) {
 		if (dirtyUniforms & (DIRTY_LIGHT0 << i)) {
-			if (u_lightpos[i] != -1) glUniform3fv(u_lightpos[i], 1, gstate_c.lightpos[i]);
+			GELightType type = (GELightType)((gstate.ltype[i] >> 8) & 3);
+			if (type == GE_LIGHTTYPE_DIRECTIONAL) {
+				// Prenormalize
+				float x = gstate_c.lightpos[i][0];
+				float y = gstate_c.lightpos[i][1];
+				float z = gstate_c.lightpos[i][2];
+				float len = sqrtf(x*x+y*y+z*z);
+				if (len == 0.0f) 
+					len = 1.0f;
+				else
+					len = 1.0f / len;
+				float vec[3] = { x * len, y * len, z * len };
+				if (u_lightpos[i] != -1) glUniform3fv(u_lightpos[i], 1, vec);
+			} else {
+				if (u_lightpos[i] != -1) glUniform3fv(u_lightpos[i], 1, gstate_c.lightpos[i]);
+			}
 			if (u_lightdir[i] != -1) glUniform3fv(u_lightdir[i], 1, gstate_c.lightdir[i]);
 			if (u_lightatt[i] != -1) glUniform3fv(u_lightatt[i], 1, gstate_c.lightatt[i]);
+			if (u_lightangle[i] != -1) glUniform1f(u_lightangle[i], gstate_c.lightangle[i]);
+			if (u_lightspotCoef[i] != -1) glUniform1f(u_lightspotCoef[i], gstate_c.lightspotCoef[i]);
 			if (u_lightambient[i] != -1) glUniform3fv(u_lightambient[i], 1, gstate_c.lightColor[0][i]);
 			if (u_lightdiffuse[i] != -1) glUniform3fv(u_lightdiffuse[i], 1, gstate_c.lightColor[1][i]);
 			if (u_lightspecular[i] != -1) glUniform3fv(u_lightspecular[i], 1, gstate_c.lightColor[2][i]);
@@ -345,13 +433,13 @@ void ShaderManager::DirtyUniform(u32 what) {
 }
 
 void ShaderManager::Clear() {
-	for (LinkedShaderCache::iterator iter = linkedShaderCache.begin(); iter != linkedShaderCache.end(); ++iter) {
+	for (auto iter = linkedShaderCache.begin(); iter != linkedShaderCache.end(); ++iter) {
+		delete iter->ls;
+	}
+	for (auto iter = fsCache.begin(); iter != fsCache.end(); ++iter)	{
 		delete iter->second;
 	}
-	for (FSCache::iterator iter = fsCache.begin(); iter != fsCache.end(); ++iter)	{
-		delete iter->second;
-	}
-	for (VSCache::iterator iter = vsCache.begin(); iter != vsCache.end(); ++iter)	{
+	for (auto iter = vsCache.begin(); iter != vsCache.end(); ++iter)	{
 		delete iter->second;
 	}
 	linkedShaderCache.clear();
@@ -361,17 +449,21 @@ void ShaderManager::Clear() {
 	DirtyShader();
 }
 
-void ShaderManager::ClearCache(bool deleteThem)
-{
+void ShaderManager::ClearCache(bool deleteThem) {
 	Clear();
 }
 
 
-void ShaderManager::DirtyShader()
-{
+void ShaderManager::DirtyShader() {
 	// Forget the last shader ID
 	lastFSID.clear();
 	lastVSID.clear();
+	lastShader = 0;
+}
+
+void ShaderManager::EndFrame() { // disables vertex arrays
+	if (lastShader)
+		lastShader->stop();
 	lastShader = 0;
 }
 
@@ -384,9 +476,11 @@ LinkedShader *ShaderManager::ApplyShader(int prim) {
 		globalDirty = 0;
 	}
 
+	bool useHWTransform = CanUseHardwareTransform(prim);
+
 	VertexShaderID VSID;
 	FragmentShaderID FSID;
-	ComputeVertexShaderID(&VSID, prim);
+	ComputeVertexShaderID(&VSID, prim, useHWTransform);
 	ComputeFragmentShaderID(&FSID);
 
 	// Just update uniforms if this is the same shader as last time.
@@ -400,12 +494,6 @@ LinkedShader *ShaderManager::ApplyShader(int prim) {
 		lastShader->stop();
 	}
 
-	// Deferred dirtying! Let's see if we can make this even more clever later.
-	for (LinkedShaderCache::iterator iter = linkedShaderCache.begin(); iter != linkedShaderCache.end(); ++iter) {
-		iter->second->dirtyUniforms |= shaderSwitchDirty;
-	}
-	shaderSwitchDirty = 0;
-
 	lastVSID = VSID;
 	lastFSID = FSID;
 
@@ -413,8 +501,23 @@ LinkedShader *ShaderManager::ApplyShader(int prim) {
 	Shader *vs;
 	if (vsIter == vsCache.end())	{
 		// Vertex shader not in cache. Let's compile it.
-		GenerateVertexShader(prim, codeBuffer_);
-		vs = new Shader(codeBuffer_, GL_VERTEX_SHADER);
+		GenerateVertexShader(prim, codeBuffer_, useHWTransform);
+		vs = new Shader(codeBuffer_, GL_VERTEX_SHADER, useHWTransform);
+
+		if (vs->Failed()) {
+			ERROR_LOG(HLE, "Shader compilation failed, falling back to software transform");
+			osm.Show("hardware transform error - falling back to software", 2.5f, 0xFF3030FF, -1, true);
+			delete vs;
+
+			// TODO: Look for existing shader with the appropriate ID, use that instead of generating a new one - however, need to make sure
+			// that that shader ID is not used when computing the linked shader ID below, because then IDs won't match
+			// next time and we'll do this over and over...
+
+			// Can still work with software transform.
+			GenerateVertexShader(prim, codeBuffer_, false);
+			vs = new Shader(codeBuffer_, GL_VERTEX_SHADER, false);
+		}
+
 		vsCache[VSID] = vs;
 	} else {
 		vs = vsIter->second;
@@ -425,21 +528,30 @@ LinkedShader *ShaderManager::ApplyShader(int prim) {
 	if (fsIter == fsCache.end())	{
 		// Fragment shader not in cache. Let's compile it.
 		GenerateFragmentShader(codeBuffer_);
-		fs = new Shader(codeBuffer_, GL_FRAGMENT_SHADER);
+		fs = new Shader(codeBuffer_, GL_FRAGMENT_SHADER, useHWTransform);
 		fsCache[FSID] = fs;
 	} else {
 		fs = fsIter->second;
 	}
-	// Okay, we have both shaders. Let's see if there's a linked one.
-	std::pair<Shader*, Shader*> linkedID(vs, fs);
 
-	LinkedShaderCache::iterator iter = linkedShaderCache.find(linkedID);
-	LinkedShader *ls;
-	if (iter == linkedShaderCache.end()) {
-		ls = new LinkedShader(vs, fs);	// This does "use" automatically
-		linkedShaderCache[linkedID] = ls;
+	// Okay, we have both shaders. Let's see if there's a linked one.
+	LinkedShader *ls = NULL;
+
+	for (auto iter = linkedShaderCache.begin(); iter != linkedShaderCache.end(); ++iter) {
+		// Deferred dirtying! Let's see if we can make this even more clever later.
+		iter->ls->dirtyUniforms |= shaderSwitchDirty;
+
+		if (iter->vs == vs && iter->fs == fs) {
+			ls = iter->ls;
+		}
+	}
+	shaderSwitchDirty = 0;
+
+	if (ls == NULL) {
+		ls = new LinkedShader(vs, fs, vs->UseHWTransform());	// This does "use" automatically
+		const LinkedShaderCacheEntry entry(vs, fs, ls);
+		linkedShaderCache.push_back(entry);
 	} else {
-		ls = iter->second;
 		ls->use();
 	}
 

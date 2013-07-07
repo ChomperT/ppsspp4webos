@@ -15,4 +15,7 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "Common/CommonTypes.h"
+
+void GeDescribeVertexType(u32 op, char *buffer, int len = 256);
 void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer);

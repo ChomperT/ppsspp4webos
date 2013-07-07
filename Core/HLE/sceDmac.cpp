@@ -16,19 +16,34 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "Globals.h"
-#include "HLE.h"
+#include "Core/Reporting.h"
+#include "Core/HLE/HLE.h"
+#include "GPU/GPUInterface.h"
+#include "GPU/GPUState.h"
 
 u32 sceDmacMemcpy(u32 dst, u32 src, u32 size)
 {
+	if (!Memory::IsValidAddress(dst) || !Memory::IsValidAddress(src))
+	{
+		ERROR_LOG(HLE, "sceDmacMemcpy(dest=%08x, src=%08x, size=%i): invalid address", dst, src, size);
+		return 0;
+	}
+
 	DEBUG_LOG(HLE, "sceDmacMemcpy(dest=%08x, src=%08x, size=%i)", dst, src, size);
-	// TODO: check the addresses.
+
 	Memory::Memcpy(dst, Memory::GetPointer(src), size);
+
+	src &= ~0x40000000;
+	dst &= ~0x40000000;
+	if ((src >= PSP_GetVidMemBase() && src < PSP_GetVidMemEnd()) || (dst >= PSP_GetVidMemBase() && dst < PSP_GetVidMemEnd()))
+		gpu->UpdateMemory(dst, src, size);
 	return 0;
 }
 
 const HLEFunction sceDmac[] =
 {
 	{0x617f3fe6, &WrapU_UUU<sceDmacMemcpy>, "sceDmacMemcpy"},
+	{0xd97f94d8, 0, "sceDmacTryMemcpy"},
 };
 
 void Register_sceDmac()

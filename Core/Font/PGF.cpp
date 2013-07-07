@@ -23,6 +23,10 @@
 #include "Common/CommonTypes.h"
 #include "Core/MemMap.h"
 #include "Core/Font/PGF.h"
+#include "Core/HLE/HLE.h"
+
+#include "GPU/GPUInterface.h"
+#include "GPU/GPUState.h"
 
 // These fonts, created by ttf2pgf, don't have complete glyph info and need to be identified.
 static bool isJPCSPFont(const char *fontName) {
@@ -40,29 +44,58 @@ static int getBits(int numBits, const u8 *buf, size_t pos) {
 	return v;
 }
 
-static std::vector<int> getTable(const u8 *buf, int bpe, int length) {
+static std::vector<int> getTable(const u8 *buf, int bpe, size_t length) {
 	std::vector<int> vec;
 	vec.resize(length);
-	for (int i = 0; i < length; i++) {
+	for (size_t i = 0; i < length; i++) {
 		vec[i] = getBits(bpe, buf, bpe * i);
 	}
 	return vec;
 }
 
 PGF::PGF()
-	: fontData(0), charMap(0), shadowCharMap(0), charPointerTable(0) {
+	: fontData(0) {
 
 }
 
 PGF::~PGF() {
-	delete [] fontData;
-	delete [] charMap;
-	delete [] shadowCharMap;
-	delete [] charPointerTable;
+	if (fontData) {
+		delete [] fontData;
+	}
 }
 
 void PGF::DoState(PointerWrap &p) {
-	// TODO!
+	p.Do(header);
+	p.Do(rev3extra);
+
+	p.Do(fontDataSize);
+	if (p.mode == p.MODE_READ) {
+		if (fontData) {
+			delete [] fontData;
+		}
+		if (fontDataSize) {
+			fontData = new u8[fontDataSize];
+			p.DoArray(fontData, (int)fontDataSize);
+		}
+	} else if (fontDataSize) {
+		p.DoArray(fontData, (int)fontDataSize);
+	}
+	p.Do(fileName);
+
+	p.DoArray(dimensionTable, ARRAY_SIZE(dimensionTable));
+	p.DoArray(xAdjustTable, ARRAY_SIZE(xAdjustTable));
+	p.DoArray(yAdjustTable, ARRAY_SIZE(yAdjustTable));
+	p.DoArray(advanceTable, ARRAY_SIZE(advanceTable));
+	p.DoArray(charmapCompressionTable1, ARRAY_SIZE(charmapCompressionTable1));
+	p.DoArray(charmapCompressionTable2, ARRAY_SIZE(charmapCompressionTable2));
+
+	p.Do(charmap_compr);
+	p.Do(charmap);
+	p.Do(glyphs);
+	p.Do(shadowGlyphs);
+	p.Do(firstGlyph);
+
+	p.DoMarker("PGF");
 }
 
 void PGF::ReadPtr(const u8 *ptr, size_t dataSize) {
@@ -111,7 +144,7 @@ void PGF::ReadPtr(const u8 *ptr, size_t dataSize) {
 	const u8 *uptr = (const u8 *)wptr;
 
 	int shadowCharMapSize = ((header.shadowMapLength * header.shadowMapBpe + 31) & ~31) / 8;
-	shadowCharMap = new u8[shadowCharMapSize];
+	u8 *shadowCharMap = new u8[shadowCharMapSize];
 	for (int i = 0; i < shadowCharMapSize; i++) {
 		shadowCharMap[i] = *uptr++;
 	}
@@ -137,19 +170,19 @@ void PGF::ReadPtr(const u8 *ptr, size_t dataSize) {
 
 	int charMapSize = ((header.charMapLength * header.charMapBpe + 31) & ~31) / 8;
 
-	charMap = new u8[charMapSize];
+	u8 *charMap = new u8[charMapSize];
 	for (int i = 0; i < charMapSize; i++) {
 		charMap[i] = *uptr++;
 	}
 
 	int charPointerSize = (((header.charPointerLength * header.charPointerBpe + 31) & ~31) / 8);
-	charPointerTable = new u8[charPointerSize];
+	u8 *charPointerTable = new u8[charPointerSize];
 	for (int i = 0; i < charPointerSize; i++) {
 		charPointerTable[i] = *uptr++;
 	}
 
 	// PGF Fontdata.
-	u32 fontDataOffset = uptr - startPtr;
+	u32 fontDataOffset = (u32)(uptr - startPtr);
 
 	fontDataSize = dataSize - fontDataOffset;
 	fontData = new u8[fontDataSize];
@@ -174,6 +207,10 @@ void PGF::ReadPtr(const u8 *ptr, size_t dataSize) {
 
 	std::vector<int> charPointers = getTable(charPointerTable, header.charPointerBpe, glyphs.size());
 	std::vector<int> shadowMap = getTable(shadowCharMap, header.shadowMapBpe, shadowGlyphs.size());
+
+	delete [] charMap;
+	delete [] shadowCharMap;
+	delete [] charPointerTable;
 
 	// Pregenerate glyphs.
 	for (size_t i = 0; i < glyphs.size(); i++) {
@@ -207,11 +244,12 @@ int PGF::GetCharIndex(int charCode, const std::vector<int> &charmapCompressed) {
 
 bool PGF::GetCharInfo(int charCode, PGFCharInfo *charInfo) {
 	Glyph glyph;
+	memset(charInfo, 0, sizeof(*charInfo));
+
 	if (!GetCharGlyph(charCode, FONT_PGF_CHARGLYPH, glyph)) {
 		// Character not in font, return zeroed charInfo as on real PSP.
 		return false;
 	}
-	memset(charInfo, 0, sizeof(*charInfo));
 
 	charInfo->bitmapWidth = glyph.w;
 	charInfo->bitmapHeight = glyph.h;
@@ -374,7 +412,7 @@ bool PGF::GetCharGlyph(int charCode, int glyphType, Glyph &glyph) {
 	return true;
 }
 
-void PGF::DrawCharacter(u32 base, int bpl, int bufWidth, int bufHeight, int x, int y, int clipX, int clipY, int clipWidth, int clipHeight, int pixelformat, int charCode, int altCharCode, int glyphType) {
+void PGF::DrawCharacter(const GlyphImage *image, int clipX, int clipY, int clipWidth, int clipHeight, int charCode, int altCharCode, int glyphType) {
 	Glyph glyph;
 	if (!GetCharGlyph(charCode, glyphType, glyph)) {
 		// No Glyph available for this charCode, try to use the alternate char.
@@ -397,13 +435,16 @@ void PGF::DrawCharacter(u32 base, int bpl, int bufWidth, int bufHeight, int x, i
 	int numberPixels = glyph.w * glyph.h;
 	int pixelIndex = 0;
 
+	int x = image->xPos64 >> 6;
+	int y = image->yPos64 >> 6;
+
 	while (pixelIndex < numberPixels && bitPtr + 8 < fontDataSize * 8) {
 		// This is some kind of nibble based RLE compression.
 		int nibble = getBits(4, fontData, bitPtr);
 		bitPtr += 4;
 
 		int count;
-		int value;
+		int value = 0;
 		if (nibble < 8) {
 			value = getBits(4, fontData, bitPtr);
 			bitPtr += 4;
@@ -432,7 +473,7 @@ void PGF::DrawCharacter(u32 base, int bpl, int bufWidth, int bufHeight, int x, i
 			if (pixelX >= clipX && pixelX < clipX + clipWidth && pixelY >= clipY && pixelY < clipY + clipHeight) {
 				// 4-bit color value
 				int pixelColor = value;
-				switch (pixelformat) {
+				switch (image->pixelFormat) {
 				case PSP_FONT_PIXELFORMAT_8:
 					// 8-bit color value
 					pixelColor |= pixelColor << 4;
@@ -451,12 +492,14 @@ void PGF::DrawCharacter(u32 base, int bpl, int bufWidth, int bufHeight, int x, i
 					break;
 				}
 
-				SetFontPixel(base, bpl, bufWidth, bufHeight, pixelX, pixelY, pixelColor, pixelformat);
+				SetFontPixel(image->bufferPtr, image->bytesPerLine, image->bufWidth, image->bufHeight, pixelX, pixelY, pixelColor, image->pixelFormat);
 			}
 
 			pixelIndex++;
 		}
 	}
+
+	gpu->InvalidateCache(image->bufferPtr, image->bytesPerLine * image->bufHeight, GPU_INVALIDATE_SAFE);
 }
 
 void PGF::SetFontPixel(u32 base, int bpl, int bufWidth, int bufHeight, int x, int y, int pixelColor, int pixelformat) {

@@ -17,6 +17,11 @@
 
 #include <windows.h>
 
+void LaunchBrowser(const char *url)
+{
+	ShellExecute(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL);
+}
+
 #include "file/vfs.h"
 #include "file/zip_read.h"
 
@@ -46,26 +51,21 @@
 #include "Windows/WindowsHost.h"
 #include "Windows/main.h"
 
-CDisasm *disasmWindow[MAX_CPUCOUNT];
-CMemoryDlg *memoryWindow[MAX_CPUCOUNT];
+CDisasm *disasmWindow[MAX_CPUCOUNT] = {0};
+CMemoryDlg *memoryWindow[MAX_CPUCOUNT] = {0};
 
 int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLine, int iCmdShow)
 {
 	Common::EnableCrashingOnCrashes();
 
-	const char *fileToStart = NULL;
-	const char *fileToLog = NULL;
-	const char *stateToLoad = NULL;
 	bool hideLog = true;
 
 #ifdef _DEBUG
 	hideLog = false;
 #endif
 
-	g_Config.Load();
-	VFSRegister("", new DirectoryAssetReader("assets/"));
-	VFSRegister("", new DirectoryAssetReader(""));
 
+	// The rest is handled in NativeInit().
 	for (int i = 1; i < __argc; ++i)
 	{
 		if (__argv[i][0] == '\0')
@@ -75,14 +75,6 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 		{
 			switch (__argv[i][1])
 			{
-			case 'j':
-				g_Config.bJit = true;
-				g_Config.bSaveSettings = false;
-				break;
-			case 'i':
-				g_Config.bJit = false;
-				g_Config.bSaveSettings = false;
-				break;
 			case 'l':
 				hideLog = false;
 				break;
@@ -90,33 +82,18 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 				g_Config.bAutoRun = false;
 				g_Config.bSaveSettings = false;
 				break;
-			case '-':
-				if (!strcmp(__argv[i], "--log") && i < __argc - 1)
-					fileToLog = __argv[++i];
-				if (!strncmp(__argv[i], "--log=", strlen("--log=")) && strlen(__argv[i]) > strlen("--log="))
-					fileToLog = __argv[i] + strlen("--log=");
-				if (!strcmp(__argv[i], "--state") && i < __argc - 1)
-					stateToLoad = __argv[++i];
-				if (!strncmp(__argv[i], "--state=", strlen("--state=")) && strlen(__argv[i]) > strlen("--state="))
-					stateToLoad = __argv[i] + strlen("--state=");
-				break;
 			}
-		}
-		else if (fileToStart == NULL)
-		{
-			fileToStart = __argv[i];
-			if (!File::Exists(fileToStart))
-			{
-				fprintf(stderr, "File not found: %s\n", fileToStart);
-				exit(1);
-			}
-		}
-		else
-		{
-			fprintf(stderr, "Can only boot one file");
-			exit(1);
 		}
 	}
+
+	g_Config.Load();
+
+	LogManager::Init();
+	LogManager::GetInstance()->GetConsoleListener()->Open(hideLog, 150, 120, "PPSSPP Debug Console");
+	LogManager::GetInstance()->SetLogLevel(LogTypes::G3D, LogTypes::LERROR);
+
+	VFSRegister("", new DirectoryAssetReader("assets/"));
+	VFSRegister("", new DirectoryAssetReader(""));
 
 	//Windows, API init stuff
 	INITCOMMONCONTROLSEX comm;
@@ -126,15 +103,13 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	timeBeginPeriod(1);
 	MainWindow::Init(_hInstance);
 
-	HACCEL hAccelTable = LoadAccelerators(_hInstance, (LPCTSTR)IDR_ACCELS);
 	g_hPopupMenus = LoadMenu(_hInstance, (LPCSTR)IDR_POPUPMENUS);
 
 	MainWindow::Show(_hInstance, iCmdShow);
-	host = new WindowsHost(MainWindow::GetHWND(), MainWindow::GetDisplayHWND());
 
 	HWND hwndMain = MainWindow::GetHWND();
-	HMENU menu = GetMenu(hwndMain);
-
+	HWND hwndDisplay = MainWindow::GetDisplayHWND();
+	
 	//initialize custom controls
 	CtrlDisAsmView::init();
 	CtrlMemView::init();
@@ -143,40 +118,27 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	DialogManager::AddDlg(memoryWindow[0] = new CMemoryDlg(_hInstance, hwndMain, currentDebugMIPS));
 	DialogManager::AddDlg(vfpudlg = new CVFPUDlg(_hInstance, hwndMain, currentDebugMIPS));
 
-	MainWindow::Update();
-	MainWindow::UpdateMenus();
+	host = new WindowsHost(hwndMain, hwndDisplay);
 
-	LogManager::Init();
-	if (fileToLog != NULL)
-		LogManager::GetInstance()->ChangeFileLog(fileToLog);
-	LogManager::GetInstance()->GetConsoleListener()->Open(hideLog, 150, 120, "PPSSPP Debug Console");
-	LogManager::GetInstance()->SetLogLevel(LogTypes::G3D, LogTypes::LERROR);
-	if (fileToStart != NULL)
-	{
-		MainWindow::SetPlaying(fileToStart);
-		MainWindow::Update();
-		MainWindow::UpdateMenus();
+	// Emu thread is always running!
+	EmuThread_Start();
 
-		EmuThread_Start(fileToStart);
-	}
-	if (g_Config.bBrowse)
-		MainWindow::BrowseAndBoot();
-
-	if (!hideLog)
-		SetForegroundWindow(hwndMain);
-
-	if (fileToStart != NULL && stateToLoad != NULL)
-		SaveState::Load(stateToLoad);
+	HACCEL hAccelTable = LoadAccelerators(_hInstance, (LPCTSTR)IDR_ACCELS);
 
 	//so.. we're at the message pump of the GUI thread
-	MSG msg;
-	while (GetMessage(&msg, NULL, 0, 0))	//while no quit
+	for (MSG msg; GetMessage(&msg, NULL, 0, 0); )	// for no quit
 	{
 		//DSound_UpdateSound();
 
-		//hack to make it possible to get to main window from floating windows with Esc
-		if (msg.hwnd != hwndMain && msg.message==WM_KEYDOWN && msg.wParam==VK_ESCAPE)
-			BringWindowToTop(hwndMain);
+		if (msg.message == WM_KEYDOWN)
+		{
+			//hack to enable/disable menu command accelerate keys
+			MainWindow::UpdateCommands();
+
+			//hack to make it possible to get to main window from floating windows with Esc
+			if (msg.hwnd != hwndMain && msg.wParam == VK_ESCAPE)
+				BringWindowToTop(hwndMain);
+		}
 
 		//Translate accelerators and dialog messages...
 		if (!TranslateAccelerator(hwndMain, hAccelTable, &msg))
@@ -192,10 +154,12 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 	VFSShutdown();
 
-	LogManager::Shutdown();
+	EmuThread_Stop();
+
 	DialogManager::DestroyAll();
 	timeEndPeriod(1);
-	g_Config.Save();
 	delete host;
+	g_Config.Save();
+	LogManager::Shutdown();
 	return 0;
 }

@@ -16,11 +16,11 @@
 // Simple ID generators. Absolutely no guarantee of collision avoidance if you implement
 // multiple parts of a single screen of UI over multiple files unless you use IMGUI_SRC_ID.
 #ifdef IMGUI_SRC_ID
-#define GEN_ID ((IMGUI_SRC_ID) + (__LINE__))
-#define GEN_ID_LOOP(i) ((IMGUI_SRC_ID) + (__LINE__) + (i) * 13612)
+#define GEN_ID (int)((IMGUI_SRC_ID) + (__LINE__))
+#define GEN_ID_LOOP(i) (int)((IMGUI_SRC_ID) + (__LINE__) + (i) * 13612)
 #else
 #define GEN_ID (__LINE__)
-#define GEN_ID_LOOP(i) ((__LINE__) + (i) * 13612)
+#define GEN_ID_LOOP(i) ((__LINE__) + ((int)i) * 13612)
 #endif
 
 #include "gfx_es2/draw_buffer.h"
@@ -28,6 +28,8 @@
 #include <string>
 #include <vector>
 
+class Texture;
+class UIContext;
 
 class LayoutManager {
 public:
@@ -78,6 +80,53 @@ private:
 	mutable float y_;
 	float spacing_;
 };
+
+class HGrid : public LayoutManager {
+public:
+	HGrid(float x, float y, float xMax, float xSpacing = 2.0f, float ySpacing = 2.0f)
+		: x_(x), y_(y), xInit_(x), xMax_(xMax), xSpacing_(xSpacing), ySpacing_(ySpacing) {}
+	virtual void GetPos(float *w, float *h, float *x, float *y) const {
+		*x = x_;
+		*y = y_;
+		x_ += *w + xSpacing_;
+		if (x_ >= xMax_) {
+			x_ = xInit_;
+			y_ += *h + ySpacing_;
+		}
+	}
+
+private:
+	mutable float x_;
+	mutable float y_;
+	float xInit_;
+	float xMax_;
+	float xSpacing_;
+	float ySpacing_;
+};
+
+class VGrid : public LayoutManager {
+public:
+	VGrid(float x, float y, float yMax, float xSpacing = 2.0f, float ySpacing = 2.0f)
+		: x_(x), y_(y), yInit_(y), yMax_(yMax), xSpacing_(xSpacing), ySpacing_(ySpacing) {}
+	virtual void GetPos(float *w, float *h, float *x, float *y) const {
+		*x = x_;
+		*y = y_;
+		y_ += *h + ySpacing_;
+		if (y_ + *h >= yMax_) {
+			x_ += *w + xSpacing_;
+			y_ = yInit_;
+		}
+	}
+
+private:
+	mutable float x_;
+	mutable float y_;
+	float yInit_;
+	float yMax_;
+	float xSpacing_;
+	float ySpacing_;
+};
+
 
 #ifndef MAX_POINTERS
 #define MAX_POINTERS 8
@@ -180,7 +229,12 @@ private:
 bool UIRegionHit(int pointerId, int x, int y, int w, int h, int margin);
 
 // Call at start of frame
-void UIBegin();
+void UIBegin(const GLSLProgram *shader);
+
+// Call at end of frame.
+
+void UIEnd();
+void UIFlush();
 
 void UIUpdateMouse(int i, float x, float y, bool down);
 
@@ -188,9 +242,9 @@ void UIUpdateMouse(int i, float x, float y, bool down);
 void UIReset();
 
 // Returns 1 if clicked
-int UIButton(int id, const LayoutManager &layout, float w, const char *text, int button_align);
+int UIButton(int id, const LayoutManager &layout, float w, float h, const char *text, int button_align);
 int UIImageButton(int id, const LayoutManager &layout, float w, int image_id, int button_align);	// uses current UI atlas for fetching images.
-
+int UITextureButton(UIContext *ctx, int id, const LayoutManager &layout, float w, float h, Texture *texture, int button_align, uint32_t color, int drop_shadow=0);  // uses current UI atlas for fetching images.
 // Returns 1 if clicked, puts the value in *value (where it also gets the current state).
 int UICheckBox(int id, int x, int y, const char *text, int align, bool *value);
 
@@ -244,11 +298,3 @@ private:
 	DISALLOW_COPY_AND_ASSIGN(UIList);
 };
 
-// Call at end of frame.
-// Do this afterwards (or similar):
-
-// ShaderManager::SetUIProgram();
-// ui_draw2d.Flush(ShaderManager::Program());
-// ui_draw2d_front.Flush(ShaderManager::Program());
-
-void UIEnd();

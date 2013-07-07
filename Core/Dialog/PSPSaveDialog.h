@@ -30,7 +30,10 @@
 #define SCE_UTILITY_SAVEDATA_ERROR_LOAD_PARAM			(0x80110308)
 #define SCE_UTILITY_SAVEDATA_ERROR_LOAD_INTERNAL		(0x8011030b)
 
-#define SCE_UTILITY_SAVEDATA_ERROR_RW_NO_DATA			(0x80110327)
+#define SCE_UTILITY_SAVEDATA_ERROR_RW_NO_MEMSTICK       (0x80110321)
+#define SCE_UTILITY_SAVEDATA_ERROR_RW_NO_DATA           (0x80110327)
+#define SCE_UTILITY_SAVEDATA_ERROR_RW_BAD_PARAMS        (0x80110328)
+#define SCE_UTILITY_SAVEDATA_ERROR_RW_BAD_STATUS        (0x8011032c)
 
 #define SCE_UTILITY_SAVEDATA_ERROR_SAVE_NO_MS			(0x80110381)
 #define SCE_UTILITY_SAVEDATA_ERROR_SAVE_EJECT_MS		(0x80110382)
@@ -66,31 +69,33 @@ public:
 
 	virtual int Init(int paramAddr);
 	virtual int Update();
-	virtual int Shutdown();
+	virtual int Shutdown(bool force = false);
 	virtual void DoState(PointerWrap &p);
+	virtual pspUtilityDialogCommon *GetCommonParam();
 
 private :
 
+	void DisplayBanner(int which);
 	void DisplaySaveList(bool canMove = true);
 	void DisplaySaveIcon();
 	void DisplayTitle(std::string name);
-	void DisplayEnterBack();
-	void DisplayBack();
 	void DisplaySaveDataInfo1();
 	void DisplaySaveDataInfo2();
-	void DisplayConfirmationYesNo(std::string text);
-	void DisplayInfo(std::string text);
+	void DisplayMessage(std::string text, bool hasYesNo = false);
+	const std::string GetSelectedSaveDirName();
 
 	enum DisplayState
 	{
 		DS_NONE,
 
 		DS_SAVE_LIST_CHOICE,
+		DS_SAVE_CONFIRM,
 		DS_SAVE_CONFIRM_OVERWRITE,
 		DS_SAVE_SAVING,
 		DS_SAVE_DONE,
 
 		DS_LOAD_LIST_CHOICE,
+		DS_LOAD_CONFIRM,
 		DS_LOAD_LOADING,
 		DS_LOAD_DONE,
 		DS_LOAD_NODATA,
@@ -102,18 +107,23 @@ private :
 		DS_DELETE_NODATA
 	};
 
+	enum DialogBanner
+	{
+		DB_NONE,
+		DB_SAVE,
+		DB_LOAD,
+		DB_DELETE
+	};
+
 	DisplayState display;
 
 	SavedataParam param;
 	SceUtilitySavedataParam request;
-	int requestAddr;
+	// For detecting changes made by the game.
+	SceUtilitySavedataParam originalRequest;
+	u32 requestAddr;
 	int currentSelectedSave;
 
 	int yesnoChoice;
-
-	int okButtonImg;
-	int cancelButtonImg;
-	int okButtonFlag;
-	int cancelButtonFlag;
 };
 

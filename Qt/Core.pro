@@ -5,7 +5,7 @@ TEMPLATE = lib
 CONFIG += staticlib
 
 version.target = ../git-version.cpp
-contains(QMAKE_HOST.os, "Windows") { version.commands = $$PWD/../Windows/git-version-gen.cmd }
+!contains(MEEGO_EDITION,harmattan):contains(QMAKE_HOST.os, "Windows") { version.commands = $$PWD/../Windows/git-version-gen.cmd }
 else { version.commands = $$PWD/git-version-gen.sh }
 version.depends = ../.git
 
@@ -15,7 +15,7 @@ SOURCES += ../git-version.cpp
 
 include(Settings.pri)
 
-INCLUDEPATH += ../native ../Core/MIPS ../
+INCLUDEPATH += ../native ../Core/MIPS ../ ../ext/xbrz
 
 arm {
 	SOURCES += ../Core/MIPS/ARM/*.cpp \ #CoreARM
@@ -36,6 +36,8 @@ SOURCES += ../Core/CPU.cpp \ # Core
 	../Core/Config.cpp \
 	../Core/Core.cpp \
 	../Core/CoreTiming.cpp \
+	../Core/CwCheat.cpp \
+	../Core/HDRemaster.cpp \
 	../Core/Host.cpp \
 	../Core/Loaders.cpp \
 	../Core/MemMap.cpp \
@@ -61,13 +63,16 @@ SOURCES += ../Core/CPU.cpp \ # Core
 	../GPU/Math3D.cpp \
 	../GPU/Null/NullGpu.cpp \
 	../GPU/GLES/*.cpp \
-	../ext/libkirk/*.c # Kirk
+	../ext/libkirk/*.c \ # Kirk
+	../ext/xbrz/*.cpp # XBRZ
 
 HEADERS += ../Core/CPU.h \
 	../Core/Config.h \
 	../Core/Core.h \
 	../Core/CoreParameter.h \
 	../Core/CoreTiming.h \
+	../Core/CwCheat.h \
+	../Core/HDRemaster.h \
 	../Core/Host.h \
 	../Core/Loaders.h \
 	../Core/MemMap.h \
@@ -88,5 +93,6 @@ HEADERS += ../Core/CPU.h \
 	../Core/Util/*.h \
 	../GPU/GLES/*.h \
 	../GPU/*.h \
-	../ext/libkirk/*.h
+	../ext/libkirk/*.h \
+	../ext/xbrz/*.h
 

@@ -13,9 +13,10 @@
 
 #pragma once
 
-#include <list>
+#include <vector>
 
 #include "base/basictypes.h"
+#include "base/logging.h"
 #include "base/display.h"
 #include "base/NativeApp.h"
 
@@ -33,13 +34,18 @@ class UIContext;
 
 class Screen {
 public:
-	Screen(bool isUiScreen = false);
-	virtual ~Screen();
+	Screen() : screenManager_(0) { }
+	virtual ~Screen() {
+		screenManager_ = 0;
+	}
+
 	virtual void update(InputState &input) = 0;
 	virtual void render() {}
 	virtual void deviceLost() {}
 	virtual void dialogFinished(const Screen *dialog, DialogResult result) {}
-	virtual void touch(int pointer, float x, float y, double time, TouchEvent event) {}
+	virtual void touch(const TouchInput &touch) {}
+	virtual void key(const KeyInput &key) {}
+	virtual void axis(const AxisInput &touch) {}
 	virtual void sendMessage(const char *msg, const char *value) {}
 
 	ScreenManager *screenManager() { return screenManager_; }
@@ -47,9 +53,10 @@ public:
 
 	virtual void *dialogData() { return 0; }
 
+	virtual bool isTransparent() { return false; }
+
 private:
 	ScreenManager *screenManager_;
-	bool isUiScreen_;
 	DISALLOW_COPY_AND_ASSIGN(Screen);
 };
 
@@ -85,7 +92,9 @@ public:
 	void finishDialog(const Screen *dialog, DialogResult result = DR_OK);
 
 	// Instant touch, separate from the update() mechanism.
-	void touch(int pointer, float x, float y, double time, TouchEvent event);
+	void touch(const TouchInput &touch);
+	void key(const KeyInput &key);
+	void axis(const AxisInput &touch);
 
 	// Generic facility for gross hacks :P
 	void sendMessage(const char *msg, const char *value);
@@ -109,5 +118,5 @@ private:
 
 	// Dialog stack. These are shown "on top" of base screens and the Android back button works as expected.
 	// Used for options, in-game menus and other things you expect to be able to back out from onto something.
-	std::list<Layer> stack_;
+	std::vector<Layer> stack_;
 };

@@ -24,7 +24,7 @@
 // with CISO images.
 
 #include "../../Globals.h"
-#include <string>
+#include "Core/ELF/PBPReader.h"
 
 class BlockDevice
 {
@@ -39,13 +39,12 @@ public:
 class CISOFileBlockDevice : public BlockDevice
 {
 public:
-	CISOFileBlockDevice(std::string _filename);
+	CISOFileBlockDevice(FILE *file);
 	~CISOFileBlockDevice();
 	bool ReadBlock(int blockNumber, u8 *outPtr);
 	u32 GetNumBlocks() { return numBlocks;}
 
 private:
-	std::string filename;
 	FILE *f;
 	u32 *index;
 	int indexShift;
@@ -57,13 +56,53 @@ private:
 class FileBlockDevice : public BlockDevice
 {
 public:
-	FileBlockDevice(std::string _filename);
+	FileBlockDevice(FILE *file);
 	~FileBlockDevice();
 	bool ReadBlock(int blockNumber, u8 *outPtr);
 	u32 GetNumBlocks() {return (u32)(filesize / GetBlockSize());}
 
 private:
-	std::string filename;
 	FILE *f;
 	size_t filesize;
 };
+
+
+// For encrypted ISOs in PBP files.
+
+struct table_info {
+	u8 mac[16];
+	u32 offset;
+	int size;
+	int flag;
+	int unk_1c;
+};
+
+class NPDRMDemoBlockDevice : public BlockDevice
+{
+public:
+	NPDRMDemoBlockDevice(FILE *file);
+	~NPDRMDemoBlockDevice();
+
+	bool ReadBlock(int blockNumber, u8 *outPtr);
+	u32 GetNumBlocks() {return (u32)lbaSize;}
+
+private:
+	FILE *f;
+	u32 lbaSize;
+
+	u32 psarOffset;
+	int blockSize;
+	int blockLBAs;
+	u32 numBlocks;
+
+	u8 vkey[16];
+	u8 hkey[16];
+	struct table_info *table;
+
+	int currentBlock;
+	u8 *blockBuf;
+	u8 *tempBuf;
+};
+
+
+BlockDevice *constructBlockDevice(const char *filename);

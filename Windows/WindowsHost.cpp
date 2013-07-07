@@ -17,15 +17,23 @@
 
 #include "Core/Core.h"
 #include "Core/Config.h"
+#include "Core/CoreParameter.h"
+#include "Core/System.h"
 #include "EmuThread.h"
 #include "DSoundStream.h"
 #include "WindowsHost.h"
 #include "WndMainWindow.h"
 #include "OpenGLBase.h"
 
-#include "../Windows/Debugger/Debugger_Disasm.h"
-#include "../Windows/Debugger/Debugger_MemoryDlg.h"
-#include "../Core/Debugger/SymbolMap.h"
+#include "Windows/Debugger/DebuggerShared.h"
+#include "Windows/Debugger/Debugger_Disasm.h"
+#include "Windows/Debugger/Debugger_MemoryDlg.h"
+
+#include "Windows/DinputDevice.h"
+#include "Windows/XinputDevice.h"
+#include "Windows/KeyboardDevice.h"
+
+#include "Core/Debugger/SymbolMap.h"
 
 #include "main.h"
 
@@ -41,6 +49,26 @@ int MyMix(short *buffer, int numSamples, int bits, int rate, int channels)
 		memset(buffer,0,numSamples*sizeof(short)*2);
 		return numSamples;
 	}
+}
+
+static BOOL PostDialogMessage(Dialog *dialog, UINT message, WPARAM wParam = 0, LPARAM lParam = 0)
+{
+	return PostMessage(dialog->GetDlgHandle(), message, wParam, lParam);
+}
+
+WindowsHost::WindowsHost(HWND mainWindow, HWND displayWindow)
+{
+	mainWindow_ = mainWindow;
+	displayWindow_ = displayWindow;
+
+#define PUSH_BACK(Cls) do { list.push_back(std::shared_ptr<InputDevice>(new Cls())); } while (0)
+
+	input.push_back(std::shared_ptr<InputDevice>(new XinputDevice()));
+	input.push_back(std::shared_ptr<InputDevice>(new DinputDevice()));
+	keyboard = std::shared_ptr<KeyboardDevice>(new KeyboardDevice());
+	input.push_back(keyboard);
+
+	SetConsolePosition();
 }
 
 bool WindowsHost::InitGL(std::string *error_message)
@@ -95,14 +123,14 @@ void WindowsHost::UpdateSound()
 void WindowsHost::ShutdownSound()
 {
 	DSound::DSound_StopSound();
-	delete curMixer;
+	if (curMixer != NULL)
+		delete curMixer;
 	curMixer = 0;
 }
 
 void WindowsHost::UpdateUI()
 {
 	MainWindow::Update();
-	MainWindow::UpdateMenus();
 }
 
 
@@ -110,35 +138,47 @@ void WindowsHost::UpdateMemView()
 {
 	for (int i=0; i<numCPUs; i++)
 		if (memoryWindow[i])
-			memoryWindow[i]->Update();
+			PostDialogMessage(memoryWindow[i], WM_DEB_UPDATE);
 }
 
 void WindowsHost::UpdateDisassembly()
 {
 	for (int i=0; i<numCPUs; i++)
 		if (disasmWindow[i])
-			disasmWindow[i]->Update();
+			PostDialogMessage(disasmWindow[i], WM_DEB_UPDATE);
 }
 
 void WindowsHost::SetDebugMode(bool mode)
 {
-	for (int i=0; i<numCPUs; i++)
+	for (int i = 0; i < numCPUs; i++)
+	{
 		if (disasmWindow[i])
-			disasmWindow[i]->SetDebugMode(mode);
+			PostDialogMessage(disasmWindow[i], WM_DEB_SETDEBUGLPARAM, 0, (LPARAM)mode);
+	}
 }
 
+extern BOOL g_bFullScreen;
 
-void WindowsHost::BeginFrame()
+void WindowsHost::PollControllers(InputState &input_state)
 {
+	bool doPad = true;
 	for (auto iter = this->input.begin(); iter != this->input.end(); iter++)
-		if ((*iter)->UpdateState() == 0)
-			break; // *iter is std::shared_ptr, **iter is InputDevice
+	{
+		auto device = *iter;
+		if (!doPad && device->IsPad())
+			continue;
+		if (device->UpdateState(input_state) == InputDevice::UPDATESTATE_SKIP_PAD)
+			doPad = false;
+	}
 }
 
 void WindowsHost::BootDone()
 {
 	symbolMap.SortSymbols();
 	SendMessage(MainWindow::GetHWND(), WM_USER+1, 0,0);
+
+	SetDebugMode(!g_Config.bAutoRun);
+	Core_EnableStepping(!g_Config.bAutoRun);
 }
 
 static std::string SymbolMapFilename(const char *currentFilename)
@@ -154,13 +194,12 @@ static std::string SymbolMapFilename(const char *currentFilename)
 
 bool WindowsHost::AttemptLoadSymbolMap()
 {
-	return symbolMap.LoadSymbolMap(SymbolMapFilename(GetCurrentFilename()).c_str());
+	return symbolMap.LoadSymbolMap(SymbolMapFilename(PSP_CoreParameter().fileToStart.c_str()).c_str());
 }
 
-void WindowsHost::PrepareShutdown()
+void WindowsHost::SaveSymbolMap()
 {
-	// Autosaving symbolmap is no longer very useful.
-	// symbolMap.SaveSymbolMap(SymbolMapFilename(GetCurrentFilename()).c_str());
+	symbolMap.SaveSymbolMap(SymbolMapFilename(PSP_CoreParameter().fileToStart.c_str()).c_str());
 }
 
 void WindowsHost::AddSymbol(std::string name, u32 addr, u32 size, int type=0) 
@@ -175,4 +214,22 @@ bool WindowsHost::IsDebuggingEnabled()
 #else
 	return false;
 #endif
+}
+
+void WindowsHost::SetConsolePosition()
+{
+	HWND console = GetConsoleWindow();
+	if (console != NULL && g_Config.iConsoleWindowX != -1 && g_Config.iConsoleWindowY != -1)
+		SetWindowPos(console, NULL, g_Config.iConsoleWindowX, g_Config.iConsoleWindowY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+}
+
+void WindowsHost::UpdateConsolePosition()
+{
+	RECT rc;
+	HWND console = GetConsoleWindow();
+	if (console != NULL && GetWindowRect(console, &rc))
+	{
+		g_Config.iConsoleWindowX = rc.left;
+		g_Config.iConsoleWindowY = rc.top;
+	}
 }

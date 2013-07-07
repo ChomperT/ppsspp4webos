@@ -15,6 +15,8 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "Core/Reporting.h"
+
 #include "../../HLE/HLE.h"
 #include "../../Host.h"
 
@@ -25,7 +27,7 @@
 
 #include "Jit.h"
 #include "RegCache.h"
-#include "JitCache.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
 
 #define _RS ((op>>21) & 0x1F)
 #define _RT ((op>>16) & 0x1F)
@@ -98,7 +100,6 @@ static void JitBranchLogMismatch(u32 op, u32 pc)
 	char temp[256];
 	MIPSDisAsm(op, pc, temp, true);
 	ERROR_LOG(JIT, "Bad jump: %s - int:%08x jit:%08x", temp, intBranchExit, jitBranchExit);
-	Core_EnableStepping(true);
 	host->SetDebugMode(true);
 }
 
@@ -128,7 +129,7 @@ void Jit::BranchRSRTComp(u32 op, Gen::CCFlags cc, bool likely)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in RSRTComp delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op&0xFFFF)<<2;
@@ -184,7 +185,7 @@ void Jit::BranchRSZeroComp(u32 op, Gen::CCFlags cc, bool andLink, bool likely)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in RSZeroComp delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op&0xFFFF)<<2;
@@ -279,7 +280,7 @@ void Jit::BranchFPFlag(u32 op, Gen::CCFlags cc, bool likely)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in FPFlag delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op & 0xFFFF) << 2;
@@ -340,7 +341,7 @@ void Jit::BranchVFPUFlag(u32 op, Gen::CCFlags cc, bool likely)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in VFPU delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op & 0xFFFF) << 2;
@@ -404,7 +405,7 @@ void Jit::Comp_Jump(u32 op)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in Jump delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	u32 off = ((op & 0x3FFFFFF) << 2);
@@ -441,7 +442,7 @@ void Jit::Comp_JumpReg(u32 op)
 {
 	CONDITIONAL_LOG;
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in JumpReg delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int rs = _RS;

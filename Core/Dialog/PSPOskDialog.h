@@ -94,7 +94,7 @@ enum SceUtilityOskInputType
 /**
 * OSK Field data
 */
-typedef struct _SceUtilityOskData
+struct SceUtilityOskData
 {
 	/** Unknown. Pass 0. */
 	int unk_00;
@@ -111,32 +111,46 @@ typedef struct _SceUtilityOskData
 	/** Unknown. Pass 0. */
 	int unk_24;
 	/** Description text */
-	u32 descPtr;
+	PSPPointer<u16> desc;
 	/** Initial text */
-	u32 intextPtr;
-	/** Length of output text */
+	PSPPointer<u16> intext;
+	// Length, in unsigned shorts, including the terminator.
 	u32 outtextlength;
 	/** Pointer to the output text */
-	u32 outtextPtr;
+	PSPPointer<u16> outtext;
 	/** Result. One of ::SceUtilityOskResult */
 	int result;
-	/** The max text that can be input */
+	// Number of characters to allow, not including terminator (if less than outtextlength - 1.)
 	u32 outtextlimit;
+};
 
-} SceUtilityOskData;
-
-/**
-* OSK parameters
-*/
-typedef struct _SceUtilityOskParams
+// Parameters to sceUtilityOskInitStart
+struct SceUtilityOskParams
 {
 	pspUtilityDialogCommon base;
-	int datacount;		/** Number of input fields */
-	u32 SceUtilityOskDataPtr; /** Pointer to the start of the data for the input fields */
-	int state;			/** The local OSK state, one of ::SceUtilityOskState */
-	int unk_60;/** Unknown. Pass 0 */
+	// Number of fields.
+	int fieldCount;
+	// Pointer to an array of fields (see SceUtilityOskData.)
+	PSPPointer<SceUtilityOskData> fields;
+	SceUtilityOskState state;
+	// Maybe just padding?
+	int unk_60;
 
-} SceUtilityOskParams;
+};
+
+// Internal enum, not from PSP.
+enum OskKeyboardDisplay
+{
+	OSK_KEYBOARD_LATIN_LOWERCASE,
+	OSK_KEYBOARD_LATIN_UPPERCASE,
+	OSK_KEYBOARD_HIRAGANA,
+	OSK_KEYBOARD_KATAKANA,
+	OSK_KEYBOARD_KOREAN,
+	OSK_KEYBOARD_RUSSIAN_LOWERCASE,
+	OSK_KEYBOARD_RUSSIAN_UPPERCASE,
+	// TODO: Something to do native?
+	OSK_KEYBOARD_COUNT
+};
 
 
 class PSPOskDialog: public PSPDialog {
@@ -146,19 +160,33 @@ public:
 
 	virtual int Init(u32 oskPtr);
 	virtual int Update();
+	virtual int Shutdown(bool force = false);
 	virtual void DoState(PointerWrap &p);
+	virtual pspUtilityDialogCommon *GetCommonParam();
+
 private:
-	void HackyGetStringWide(std::string& _string, const u32 em_address);
+	void ConvertUCS2ToUTF8(std::string& _string, const PSPPointer<u16> em_address);
+	void ConvertUCS2ToUTF8(std::string& _string, const wchar_t *input);
 	void RenderKeyboard();
 
-	SceUtilityOskParams oskParams;
-	SceUtilityOskData oskData;
+	std::wstring CombinationString(bool isInput); // for Japanese, Korean
+	std::wstring CombinationKorean(bool isInput); // for Korea
+	void RemoveKorean(); // for Korean character removal
+	
+	u32 FieldMaxLength();
+	int GetIndex(const wchar_t* src, wchar_t ch);
+
+	PSPPointer<SceUtilityOskParams> oskParams;
 	std::string oskDesc;
 	std::string oskIntext;
 	std::string oskOuttext;
-	int oskParamsAddr;
 
 	int selectedChar;
-	std::string inputChars;
+	std::wstring inputChars;
+	OskKeyboardDisplay currentKeyboard;
+	bool isCombinated;
+
+	int i_level; // for Korean Keyboard support
+	int i_value[3]; // for Korean Keyboard support
 };
 

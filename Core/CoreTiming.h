@@ -33,8 +33,6 @@
 
 #include "../Globals.h"
 
-#include <string>
-
 class PointerWrap;
 
 //const int CPU_HZ = 222000000;
@@ -93,7 +91,8 @@ namespace CoreTiming
 	void ScheduleEvent(s64 cyclesIntoFuture, int event_type, u64 userdata=0);
 	void ScheduleEvent_Threadsafe(s64 cyclesIntoFuture, int event_type, u64 userdata=0);
 	void ScheduleEvent_Threadsafe_Immediate(int event_type, u64 userdata=0);
-	u64 UnscheduleEvent(int event_type, u64 userdata);
+	s64 UnscheduleEvent(int event_type, u64 userdata);
+	s64 UnscheduleThreadsafeEvent(int event_type, u64 userdata);
 
 	void RemoveEvent(int event_type);
 	void RemoveThreadsafeEvent(int event_type);

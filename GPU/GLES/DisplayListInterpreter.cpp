@@ -18,6 +18,7 @@
 #include "Core/MemMap.h"
 #include "Core/Host.h"
 #include "Core/Config.h"
+#include "Core/Reporting.h"
 #include "Core/System.h"
 #include "gfx_es2/gl_state.h"
 
@@ -35,35 +36,34 @@
 #include "../../Core/HLE/sceKernelInterrupt.h"
 #include "../../Core/HLE/sceGe.h"
 
-extern u32 curTextureWidth;
-extern u32 curTextureHeight;
-
 static const u8 flushOnChangedBeforeCommandList[] = {
+	GE_CMD_REGION1,GE_CMD_REGION2,
 	GE_CMD_VERTEXTYPE,
-	GE_CMD_BLENDMODE,
-	GE_CMD_BLENDFIXEDA,
-	GE_CMD_BLENDFIXEDB,
-	GE_CMD_TEXOFFSETU,
-	GE_CMD_TEXOFFSETV,
-	GE_CMD_TEXSCALEU,
-	GE_CMD_TEXSCALEV,
-	GE_CMD_CULLFACEENABLE,
-	GE_CMD_CULL,
-	GE_CMD_TEXTUREMAPENABLE,
 	GE_CMD_LIGHTINGENABLE,
+	GE_CMD_LIGHTENABLE0,GE_CMD_LIGHTENABLE1,GE_CMD_LIGHTENABLE2,GE_CMD_LIGHTENABLE3,
+	GE_CMD_CULLFACEENABLE,
+	GE_CMD_TEXTUREMAPENABLE,
 	GE_CMD_FOGENABLE,
 	GE_CMD_DITHERENABLE,
 	GE_CMD_ALPHABLENDENABLE,
 	GE_CMD_ALPHATESTENABLE,
-	GE_CMD_ALPHATEST,
+	GE_CMD_ZTESTENABLE,
+	GE_CMD_STENCILTESTENABLE,
 	GE_CMD_COLORTESTENABLE,
-	GE_CMD_COLORTEST,
-	GE_CMD_COLORTESTMASK,
-	GE_CMD_COLORREF,
-	GE_CMD_MINZ,GE_CMD_MAXZ,
-	GE_CMD_FOG1,
-	GE_CMD_FOG2,
-	GE_CMD_FOGCOLOR,
+	GE_CMD_MORPHWEIGHT0,GE_CMD_MORPHWEIGHT1,GE_CMD_MORPHWEIGHT2,GE_CMD_MORPHWEIGHT3,
+	GE_CMD_MORPHWEIGHT4,GE_CMD_MORPHWEIGHT5,GE_CMD_MORPHWEIGHT6,GE_CMD_MORPHWEIGHT7,
+	GE_CMD_PATCHDIVISION,
+	GE_CMD_PATCHPRIMITIVE,
+	GE_CMD_PATCHFACING,
+	GE_CMD_VIEWPORTX1,GE_CMD_VIEWPORTY1,
+	GE_CMD_VIEWPORTX2,GE_CMD_VIEWPORTY2,
+	GE_CMD_VIEWPORTZ1,GE_CMD_VIEWPORTZ2,
+	GE_CMD_TEXSCALEU,
+	GE_CMD_TEXSCALEV,
+	GE_CMD_TEXOFFSETU,
+	GE_CMD_TEXOFFSETV,
+	GE_CMD_OFFSETX,
+	GE_CMD_OFFSETY,
 	GE_CMD_SHADEMODE,
 	GE_CMD_REVERSENORMAL,
 	GE_CMD_MATERIALUPDATE,
@@ -95,47 +95,52 @@ static const u8 flushOnChangedBeforeCommandList[] = {
 	GE_CMD_LAC1,GE_CMD_LDC1,GE_CMD_LSC1,
 	GE_CMD_LAC2,GE_CMD_LDC2,GE_CMD_LSC2,
 	GE_CMD_LAC3,GE_CMD_LDC3,GE_CMD_LSC3,
-	GE_CMD_VIEWPORTX1,GE_CMD_VIEWPORTY1,
-	GE_CMD_VIEWPORTX2,GE_CMD_VIEWPORTY2,
-	GE_CMD_VIEWPORTZ1,GE_CMD_VIEWPORTZ2,
-	GE_CMD_LIGHTENABLE0,GE_CMD_LIGHTENABLE1,GE_CMD_LIGHTENABLE2,GE_CMD_LIGHTENABLE3,
-	GE_CMD_PATCHDIVISION,
-	GE_CMD_CLEARMODE,
+	GE_CMD_CULL,
+	GE_CMD_FRAMEBUFPTR,
+	GE_CMD_FRAMEBUFWIDTH,
+	GE_CMD_TEXADDR0,GE_CMD_TEXADDR1,GE_CMD_TEXADDR2,GE_CMD_TEXADDR3,
+	GE_CMD_TEXADDR4,GE_CMD_TEXADDR5,GE_CMD_TEXADDR6,GE_CMD_TEXADDR7,
+	GE_CMD_TEXBUFWIDTH0,GE_CMD_TEXBUFWIDTH1,GE_CMD_TEXBUFWIDTH2,GE_CMD_TEXBUFWIDTH3,
+	GE_CMD_TEXBUFWIDTH4,GE_CMD_TEXBUFWIDTH5,GE_CMD_TEXBUFWIDTH6,GE_CMD_TEXBUFWIDTH7,
+	GE_CMD_CLUTADDR,
+	GE_CMD_CLUTADDRUPPER,
+	GE_CMD_TEXSIZE0,GE_CMD_TEXSIZE1,GE_CMD_TEXSIZE2,GE_CMD_TEXSIZE3,
+	GE_CMD_TEXSIZE4,GE_CMD_TEXSIZE5,GE_CMD_TEXSIZE6,GE_CMD_TEXSIZE7,
 	GE_CMD_TEXMAPMODE,
 	GE_CMD_TEXSHADELS,
-	GE_CMD_TEXFUNC,
-	GE_CMD_TEXFILTER,
-	GE_CMD_TEXENVCOLOR,
 	GE_CMD_TEXMODE,
 	GE_CMD_TEXFORMAT,
+	GE_CMD_LOADCLUT,
+	GE_CMD_CLUTFORMAT,
+	GE_CMD_TEXFILTER,
 	GE_CMD_TEXWRAP,
+	GE_CMD_TEXLEVEL,
+	GE_CMD_TEXFUNC,
+	GE_CMD_TEXENVCOLOR,
+	//GE_CMD_TEXFLUSH,
+	GE_CMD_FOG1,
+	GE_CMD_FOG2,
+	GE_CMD_FOGCOLOR,	
+	// GE_CMD_TEXLODSLOPE,
+	GE_CMD_FRAMEBUFPIXFORMAT,
+	GE_CMD_CLEARMODE,
 	GE_CMD_SCISSOR1,
 	GE_CMD_SCISSOR2,
-	GE_CMD_ZTESTENABLE,
-	GE_CMD_ZWRITEDISABLE,
-	GE_CMD_STENCILTESTENABLE,
+	GE_CMD_MINZ,
+	GE_CMD_MAXZ,
+	GE_CMD_COLORTEST,
+	GE_CMD_COLORTESTMASK,
+	GE_CMD_COLORREF,
+	GE_CMD_ALPHATEST,
 	GE_CMD_STENCILOP,
 	GE_CMD_STENCILTEST,
 	GE_CMD_ZTEST,
+	GE_CMD_BLENDMODE,
+	GE_CMD_BLENDFIXEDA,
+	GE_CMD_BLENDFIXEDB,
+	GE_CMD_ZWRITEDISABLE,
 	GE_CMD_MASKRGB,
 	GE_CMD_MASKALPHA,
-	GE_CMD_TEXBUFWIDTH0,
-	GE_CMD_CLUTADDR,
-	GE_CMD_CLUTADDRUPPER,
-	GE_CMD_LOADCLUT,
-	GE_CMD_CLUTFORMAT,
-	GE_CMD_TEXADDR0,GE_CMD_TEXADDR1,GE_CMD_TEXADDR2,GE_CMD_TEXADDR3,
-	GE_CMD_TEXADDR4,GE_CMD_TEXADDR5,GE_CMD_TEXADDR6,GE_CMD_TEXADDR7,
-	GE_CMD_TEXSIZE0,GE_CMD_TEXSIZE1,GE_CMD_TEXSIZE2,GE_CMD_TEXSIZE3,
-	GE_CMD_TEXSIZE4,GE_CMD_TEXSIZE5,GE_CMD_TEXSIZE6,GE_CMD_TEXSIZE7,
-	GE_CMD_OFFSETX,
-	GE_CMD_OFFSETY,
-	GE_CMD_MORPHWEIGHT0,GE_CMD_MORPHWEIGHT1,GE_CMD_MORPHWEIGHT2,GE_CMD_MORPHWEIGHT3,
-	GE_CMD_MORPHWEIGHT4,GE_CMD_MORPHWEIGHT5,GE_CMD_MORPHWEIGHT6,GE_CMD_MORPHWEIGHT7,
-	GE_CMD_REGION1,GE_CMD_REGION2,
-	GE_CMD_FRAMEBUFPTR,
-	GE_CMD_FRAMEBUFWIDTH,
-	GE_CMD_FRAMEBUFPIXFORMAT,
 	GE_CMD_ZBUFPTR,
 	GE_CMD_ZBUFWIDTH,
 };
@@ -164,9 +169,15 @@ static const u8 flushBeforeCommandList[] = {
 };
 
 GLES_GPU::GLES_GPU()
-:		interruptsEnabled_(true),
-		resized_(false)
-{
+: resized_(false) {
+	lastVsync_ = g_Config.iVSyncInterval;
+	if (gl_extensions.EXT_swap_control_tear) {
+		// See http://developer.download.nvidia.com/opengl/specs/WGL_EXT_swap_control_tear.txt
+		glstate.SetVSyncInterval(-g_Config.iVSyncInterval);
+	} else {
+		glstate.SetVSyncInterval(g_Config.iVSyncInterval);
+	}
+
 	shaderManager_ = new ShaderManager();
 	transformDraw_.SetShaderManager(shaderManager_);
 	transformDraw_.SetTextureCache(&textureCache_);
@@ -188,6 +199,8 @@ GLES_GPU::GLES_GPU()
 		flushBeforeCommand_[flushBeforeCommandList[i]] = 1;
 	}
 	flushBeforeCommand_[1] = 0;
+
+	BuildReportingInfo();
 }
 
 GLES_GPU::~GLES_GPU() {
@@ -197,11 +210,34 @@ GLES_GPU::~GLES_GPU() {
 	delete [] flushBeforeCommand_;
 }
 
+// Let's avoid passing nulls into snprintf().
+static const char *GetGLStringAlways(GLenum name) {
+	const GLubyte *value = glGetString(name);
+	if (!value)
+		return "?";
+	return (const char *)value;
+}
+
+// Needs to be called on GPU thread, not reporting thread.
+void GLES_GPU::BuildReportingInfo() {
+	const char *glVendor = GetGLStringAlways(GL_VENDOR);
+	const char *glRenderer = GetGLStringAlways(GL_RENDERER);
+	const char *glVersion = GetGLStringAlways(GL_VERSION);
+	const char *glSlVersion = GetGLStringAlways(GL_SHADING_LANGUAGE_VERSION);
+	const char *glExtensions = GetGLStringAlways(GL_EXTENSIONS);
+
+	char temp[16384];
+	snprintf(temp, sizeof(temp), "%s (%s %s), %s (extensions: %s)", glVersion, glVendor, glRenderer, glSlVersion, glExtensions);
+	reportingPrimaryInfo_ = glVendor;
+	reportingFullInfo_ = temp;
+}
+
 void GLES_GPU::DeviceLost() {
 	// Simply drop all caches and textures.
 	// FBO:s appear to survive? Or no?
 	shaderManager_->ClearCache(false);
 	textureCache_.Clear(false);
+	framebufferManager_.DeviceLost();
 }
 
 void GLES_GPU::InitClear() {
@@ -218,20 +254,21 @@ void GLES_GPU::DumpNextFrame() {
 	dumpNextFrame_ = true;
 }
 
-void GLES_GPU::BeginDebugDraw() {
-	if (g_Config.bDrawWireframe) {
-#ifndef USING_GLES2
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-#endif
-	}
-}
-void GLES_GPU::EndDebugDraw() {
-#ifndef USING_GLES2
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-#endif
-}
-
 void GLES_GPU::BeginFrame() {
+	// Turn off vsync when unthrottled
+	int desiredVSyncInterval = g_Config.iVSyncInterval;
+	if ((PSP_CoreParameter().unthrottle) || (PSP_CoreParameter().fpsLimit == 2) || (PSP_CoreParameter().fpsLimit == 1))
+		desiredVSyncInterval = 0;
+	if (desiredVSyncInterval != lastVsync_) {
+		if (gl_extensions.EXT_swap_control_tear) {
+			// See http://developer.download.nvidia.com/opengl/specs/WGL_EXT_swap_control_tear.txt
+			glstate.SetVSyncInterval(-desiredVSyncInterval);
+		} else {
+			glstate.SetVSyncInterval(desiredVSyncInterval);
+		}
+		lastVsync_ = desiredVSyncInterval;
+	}
+
 	textureCache_.StartFrame();
 	transformDraw_.DecimateTrackedVertexArrays();
 
@@ -264,37 +301,42 @@ bool GLES_GPU::FramebufferDirty() {
 }
 
 void GLES_GPU::CopyDisplayToOutput() {
+	glstate.depthWrite.set(GL_TRUE);
 	glstate.colorMask.set(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	transformDraw_.Flush();
 
-	EndDebugDraw();
+	transformDraw_.Flush();
 
 	framebufferManager_.CopyDisplayToOutput();
 	framebufferManager_.EndFrame();
 
-	shaderManager_->DirtyShader();
-	shaderManager_->DirtyUniform(DIRTY_ALL);
-	gstate_c.textureChanged = true;
+	shaderManager_->EndFrame();
 
-	BeginDebugDraw();
+	gstate_c.textureChanged = true;
 }
 
 // Render queue
 
-void GLES_GPU::DrawSync(int mode)
+u32 GLES_GPU::DrawSync(int mode)
 {
 	transformDraw_.Flush();
+	return GPUCommon::DrawSync(mode);
 }
 
-void GLES_GPU::Continue() {
+void GLES_GPU::FastRunLoop(DisplayList &list) {
+	for (; downcount > 0; --downcount) {
+		u32 op = Memory::ReadUnchecked_U32(list.pc);
+		u32 cmd = op >> 24;
 
+		u32 diff = op ^ gstate.cmdmem[cmd];
+		CheckFlushOp(op, diff);
+		gstate.cmdmem[cmd] = op;
+		ExecuteOp(op, diff);
+
+		list.pc += 4;
+	}
 }
 
-void GLES_GPU::Break() {
-
-}
-
-void GLES_GPU::PreExecuteOp(u32 op, u32 diff) {
+inline void GLES_GPU::CheckFlushOp(u32 op, u32 diff) {
 	u32 cmd = op >> 24;
 	if (flushBeforeCommand_[cmd] == 1 || (diff && flushBeforeCommand_[cmd] == 2))
 	{
@@ -303,6 +345,10 @@ void GLES_GPU::PreExecuteOp(u32 op, u32 diff) {
 		}
 		transformDraw_.Flush();
 	}
+}
+
+void GLES_GPU::PreExecuteOp(u32 op, u32 diff) {
+	CheckFlushOp(op, diff);
 }
 
 void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
@@ -327,18 +373,25 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 			// This drives all drawing. All other state we just buffer up, then we apply it only
 			// when it's time to draw. As most PSP games set state redundantly ALL THE TIME, this is a huge optimization.
 
+			u32 count = data & 0xFFFF;
+			u32 type = data >> 16;
+
 			// This also make skipping drawing very effective.
 			framebufferManager_.SetRenderFrameBuffer();
 			if (gstate_c.skipDrawReason & (SKIPDRAW_SKIPFRAME | SKIPDRAW_NON_DISPLAYED_FB))
+			{
+				transformDraw_.SetupVertexDecoder(gstate.vertType);
+				// Rough estimate, not sure what's correct.
+				int vertexCost = transformDraw_.EstimatePerVertexCost();
+				cyclesExecuted += vertexCost * count;
 				return;
-
-			u32 count = data & 0xFFFF;
-			u32 type = data >> 16;
+			}
 
 			if (!Memory::IsValidAddress(gstate_c.vertexAddr)) {
 				ERROR_LOG(G3D, "Bad vertex address %08x!", gstate_c.vertexAddr);
 				break;
 			}
+
 
 			// TODO: Split this so that we can collect sequences of primitives, can greatly speed things up
 			// on platforms where draw calls are expensive like mobile and D3D
@@ -354,6 +407,11 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 			int bytesRead;
 			transformDraw_.SubmitPrim(verts, inds, type, count, gstate.vertType, -1, &bytesRead);
+
+			int vertexCost = transformDraw_.EstimatePerVertexCost();
+			gpuStats.vertexGPUCycles += vertexCost * count;
+			cyclesExecuted += vertexCost * count;
+
 			// After drawing, we advance the vertexAddr (when non indexed) or indexAddr (when indexed).
 			// Some games rely on this, they don't bother reloading VADDR and IADDR.
 			// Q: Are these changed reflected in the real registers? Needs testing.
@@ -387,121 +445,6 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 		}
 		break;
 
-	case GE_CMD_JUMP:
-		{
-			u32 target = gstate_c.getRelativeAddress(data);
-			if (Memory::IsValidAddress(target)) {
-				currentList->pc = target - 4; // pc will be increased after we return, counteract that
-			} else {
-				ERROR_LOG(G3D, "JUMP to illegal address %08x - ignoring! data=%06x", target, data);
-			}
-		}
-		break;
-
-	case GE_CMD_CALL:
-		{
-			// Saint Seiya needs correct support for relative calls.
-			u32 retval = currentList->pc + 4;
-			u32 target = gstate_c.getRelativeAddress(data);
-			if (stackptr == ARRAY_SIZE(stack)) {
-				ERROR_LOG(G3D, "CALL: Stack full!");
-			} else if (!Memory::IsValidAddress(target)) {
-				ERROR_LOG(G3D, "CALL to illegal address %08x - ignoring! data=%06x", target, data);
-			} else {
-				stack[stackptr++] = retval;
-				currentList->pc = target - 4;	// pc will be increased after we return, counteract that
-			}
-		}
-		break;
-
-	case GE_CMD_RET:
-		{
-			if (stackptr == 0) {
-				ERROR_LOG(G3D, "RET: Stack empty!");
-			} else {
-				u32 target = (currentList->pc & 0xF0000000) | (stack[--stackptr] & 0x0FFFFFFF);
-				//target = (target + gstate_c.originAddr) & 0xFFFFFFF;
-				currentList->pc = target - 4;
-				if (!Memory::IsValidAddress(currentList->pc)) {
-					ERROR_LOG(G3D, "Invalid DL PC %08x on return", currentList->pc);
-					finished = true;
-				}
-			}
-		}
-		break;
-
-	case GE_CMD_OFFSETADDR:
-		gstate_c.offsetAddr = data << 8;
-		// ???
-		break;
-
-	case GE_CMD_ORIGIN:
-		gstate_c.offsetAddr = currentList->pc;
-		break;
-
-
-	case GE_CMD_SIGNAL:
-		{
-			// Processed in GE_END. Has data.
-			currentList->subIntrToken = data & 0xFFFF;
-		}
-		break;
-
-	case GE_CMD_FINISH:
-		currentList->subIntrToken = data & 0xFFFF;
-		// TODO: Should this run while interrupts are suspended?
-		if (interruptsEnabled_)
-			__GeTriggerInterrupt(currentList->id, currentList->pc, currentList->subIntrBase, currentList->subIntrToken);
-		break;
-
-	case GE_CMD_END:
-		switch (prev >> 24) {
-		case GE_CMD_SIGNAL:
-			{
-				currentList->status = PSP_GE_LIST_END_REACHED;
-				// TODO: see http://code.google.com/p/jpcsp/source/detail?r=2935#
-				int behaviour = (prev >> 16) & 0xFF;
-				int signal = prev & 0xFFFF;
-				int enddata = data & 0xFFFF;
-				// We should probably defer to sceGe here, no sense in implementing this stuff in every GPU
-				switch (behaviour) {
-				case 1:  // Signal with Wait
-					ERROR_LOG(G3D, "Signal with Wait UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
-					break;
-				case 2:
-					ERROR_LOG(G3D, "Signal without wait. signal/end: %04x %04x", signal, enddata);
-					break;
-				case 3:
-					ERROR_LOG(G3D, "Signal with Pause UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
-					break;
-				case 0x10:
-					ERROR_LOG(G3D, "Signal with Jump UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
-					break;
-				case 0x11:
-					ERROR_LOG(G3D, "Signal with Call UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
-					break;
-				case 0x12:
-					ERROR_LOG(G3D, "Signal with Return UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
-					break;
-				default:
-					ERROR_LOG(G3D, "UNKNOWN Signal UNIMPLEMENTED %i ! signal/end: %04x %04x", behaviour, signal, enddata);
-					break;
-				}
-				// TODO: Should this run while interrupts are suspended?
-				if (interruptsEnabled_)
-					__GeTriggerInterrupt(currentList->id, currentList->pc, currentList->subIntrBase, currentList->subIntrToken);
-			}
-			break;
-		case GE_CMD_FINISH:
-			currentList->status = PSP_GE_LIST_DONE;
-			finished = true;
-			break;
-		default:
-			DEBUG_LOG(G3D,"Ah, not finished: %06x", prev & 0xFFFFFF);
-			break;
-		}
-		break;
-
 	case GE_CMD_BJUMP:
 		// bounding box jump. Let's just not jump, for now.
 		break;
@@ -511,12 +454,7 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 		break;
 
 	case GE_CMD_VERTEXTYPE:
-		if (diff & GE_VTYPE_THROUGH) {
-			// Throughmode changed, let's make the proj matrix dirty.
-			shaderManager_->DirtyUniform(DIRTY_PROJMATRIX);
-		}
 		shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
-		// This sets through-mode or not, as well.
 		break;
 
 	case GE_CMD_REGION1:
@@ -579,22 +517,26 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_TEXSCALEU:
 		gstate_c.uScale = getFloat24(data);
-		shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
+		if (diff)
+			shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
 		break;
 
 	case GE_CMD_TEXSCALEV:
 		gstate_c.vScale = getFloat24(data);
-		shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
+		if (diff)
+			shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
 		break;
 
 	case GE_CMD_TEXOFFSETU:
 		gstate_c.uOff = getFloat24(data);
-		shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
+		if (diff)
+			shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
 		break;
 
 	case GE_CMD_TEXOFFSETV:
 		gstate_c.vOff = getFloat24(data);
-		shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
+		if (diff)
+			shaderManager_->DirtyUniform(DIRTY_UVSCALEOFFSET);
 		break;
 
 	case GE_CMD_SCISSOR1:
@@ -612,6 +554,8 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 	case GE_CMD_FRAMEBUFPTR:
 	case GE_CMD_FRAMEBUFWIDTH:
 	case GE_CMD_FRAMEBUFPIXFORMAT:
+		if (diff)
+			gstate_c.framebufChanged = true;
 		break;
 
 	case GE_CMD_TEXADDR0:
@@ -639,9 +583,14 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_CLUTADDR:
 	case GE_CMD_CLUTADDRUPPER:
-	case GE_CMD_LOADCLUT:
 	case GE_CMD_CLUTFORMAT:
 		gstate_c.textureChanged = true;
+		// This could be used to "dirty" textures with clut.
+		break;
+
+	case GE_CMD_LOADCLUT:
+		gstate_c.textureChanged = true;
+		textureCache_.LoadClut();
 		// This could be used to "dirty" textures with clut.
 		break;
 
@@ -694,11 +643,6 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 			shaderManager_->DirtyUniform(DIRTY_AMBIENT);
 		break;
 
-	case GE_CMD_MATERIALAMBIENT:
-		if (diff)
-			shaderManager_->DirtyUniform(DIRTY_MATAMBIENTALPHA);
-		break;
-
 	case GE_CMD_MATERIALDIFFUSE:
 		if (diff)
 			shaderManager_->DirtyUniform(DIRTY_MATDIFFUSE);
@@ -709,16 +653,13 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 			shaderManager_->DirtyUniform(DIRTY_MATEMISSIVE);
 		break;
 
-	case GE_CMD_MATERIALSPECULAR:
-		if (diff)
-			shaderManager_->DirtyUniform(DIRTY_MATSPECULAR);
-		break;
-
+	case GE_CMD_MATERIALAMBIENT:
 	case GE_CMD_MATERIALALPHA:
 		if (diff)
 			shaderManager_->DirtyUniform(DIRTY_MATAMBIENTALPHA);
 		break;
 
+	case GE_CMD_MATERIALSPECULAR:
 	case GE_CMD_MATERIALSPECULARCOEF:
 		if (diff)
 			shaderManager_->DirtyUniform(DIRTY_MATSPECULAR);
@@ -772,6 +713,29 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 		}
 		break;
 
+	case GE_CMD_LKS0:
+	case GE_CMD_LKS1:
+	case GE_CMD_LKS2:
+	case GE_CMD_LKS3:
+		{
+			int l = cmd - GE_CMD_LKS0;
+			gstate_c.lightspotCoef[l] = getFloat24(data);
+			if (diff)
+				shaderManager_->DirtyUniform(DIRTY_LIGHT0 << l);
+		}
+		break;
+
+	case GE_CMD_LKO0:
+	case GE_CMD_LKO1:
+	case GE_CMD_LKO2:
+	case GE_CMD_LKO3:
+		{
+			int l = cmd - GE_CMD_LKO0;
+			gstate_c.lightangle[l] = getFloat24(data);
+			if (diff)
+				shaderManager_->DirtyUniform(DIRTY_LIGHT0 << l);
+		}
+		break;
 
 	case GE_CMD_LAC0:case GE_CMD_LAC1:case GE_CMD_LAC2:case GE_CMD_LAC3:
 	case GE_CMD_LDC0:case GE_CMD_LDC1:case GE_CMD_LDC2:case GE_CMD_LDC3:
@@ -793,6 +757,10 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_VIEWPORTX1:
 	case GE_CMD_VIEWPORTY1:
+		if (diff)
+			gstate_c.framebufChanged = true;
+		break;
+
 	case GE_CMD_VIEWPORTX2:
 	case GE_CMD_VIEWPORTY2:
 	case GE_CMD_VIEWPORTZ1:
@@ -837,12 +805,18 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 
 	case GE_CMD_COLORTEST:
 	case GE_CMD_COLORTESTMASK:
-		shaderManager_->DirtyUniform(DIRTY_COLORMASK);
+		if (diff)
+			shaderManager_->DirtyUniform(DIRTY_COLORMASK);
 		break;
 
-	case GE_CMD_COLORREF:
 	case GE_CMD_ALPHATEST:
-		shaderManager_->DirtyUniform(DIRTY_ALPHACOLORREF);
+#ifndef USING_GLES2
+		if (((data >> 16) & 0xFF) != 0xFF && (data & 7) > 1)
+			WARN_LOG_REPORT_ONCE(alphatestmask, HLE, "Unsupported alphatest mask: %02x", (data >> 16) & 0xFF);
+#endif
+	case GE_CMD_COLORREF:
+		if (diff)
+			shaderManager_->DirtyUniform(DIRTY_ALPHACOLORREF);
 		break;
 
 	case GE_CMD_TEXENVCOLOR:
@@ -931,7 +905,7 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 			if (newVal != gstate.projMatrix[num]) {
 				Flush();
 				gstate.projMatrix[num] = newVal;
-				shaderManager_->DirtyUniform(DIRTY_PROJMATRIX);
+				shaderManager_->DirtyUniform(DIRTY_PROJMATRIX | DIRTY_PROJTHROUGHMATRIX);
 			}
 			num++;
 			gstate.projmtxnum = (gstate.projmtxnum & 0xFF000000) | (num & 0xF);
@@ -974,8 +948,37 @@ void GLES_GPU::ExecuteOp(u32 op, u32 diff) {
 		}
 		break;
 
+#ifndef USING_GLES2
+	case GE_CMD_LOGICOPENABLE:
+		if (data != 0)
+			ERROR_LOG_REPORT_ONCE(logicOpEnable, G3D, "Unsupported logic op enabled: %x", data);
+		break;
+
+	case GE_CMD_LOGICOP:
+		if (data != 0)
+			ERROR_LOG_REPORT_ONCE(logicOp, G3D, "Unsupported logic op: %06x", data);
+		break;
+
+	case GE_CMD_ANTIALIASENABLE:
+		if (data != 0)
+			WARN_LOG_REPORT_ONCE(antiAlias, G3D, "Unsupported antialias enabled: %06x", data);
+		break;
+
+	case GE_CMD_TEXLODSLOPE:
+		if (data != 0)
+			WARN_LOG_REPORT_ONCE(texLodSlope, G3D, "Unsupported texture lod slope: %06x", data);
+		break;
+
+	case GE_CMD_TEXLEVEL:
+		if (data == 1)
+			WARN_LOG_REPORT_ONCE(texLevel1, G3D, "Unsupported texture level bias settings: %06x", data)
+		else if (data != 0)
+			WARN_LOG_REPORT_ONCE(texLevel2, G3D, "Unsupported texture level bias settings: %06x", data);
+		break;
+#endif
+
 	default:
-		DEBUG_LOG(G3D,"DL Unknown: %08x @ %08x", op, currentList == NULL ? 0 : currentList->pc);
+		GPUCommon::ExecuteOp(op, diff);
 		break;
 	}
 }
@@ -1020,28 +1023,46 @@ void GLES_GPU::DoBlockTransfer() {
 	// Do the copy!
 	for (int y = 0; y < height; y++) {
 		const u8 *src = Memory::GetPointer(srcBasePtr + ((y + srcY) * srcStride + srcX) * bpp);
-		u8 *dst = Memory::GetPointer(dstBasePtr + ((y + dstY) * srcStride + dstX) * bpp);
+		u8 *dst = Memory::GetPointer(dstBasePtr + ((y + dstY) * dstStride + dstX) * bpp);
 		memcpy(dst, src, width * bpp);
 	}
 
 	// TODO: Notify all overlapping FBOs that they need to reload.
 
-	textureCache_.Invalidate(dstBasePtr + dstY * dstStride + dstX, height * dstStride + width * bpp, true);
+	textureCache_.Invalidate(dstBasePtr + dstY * dstStride + dstX, height * dstStride + width * bpp, GPU_INVALIDATE_HINT);
+
+	
+	// A few games use this INSTEAD of actually drawing the video image to the screen, they just blast it to
+	// the backbuffer. Detect this and have the framebuffermanager draw the pixels.
+
+	u32 backBuffer = framebufferManager_.PrevDisplayFramebufAddr();
+	u32 displayBuffer = framebufferManager_.DisplayFramebufAddr();
+
+	if (((backBuffer != 0 && dstBasePtr == backBuffer) ||
+		  (displayBuffer != 0 && dstBasePtr == displayBuffer)) &&
+			dstStride == 512 && height == 272) {
+		framebufferManager_.DrawPixels(Memory::GetPointer(dstBasePtr), 3, 512);
+	}
 }
 
-void GLES_GPU::InvalidateCache(u32 addr, int size) {
+void GLES_GPU::InvalidateCache(u32 addr, int size, GPUInvalidationType type) {
 	if (size > 0)
-		textureCache_.Invalidate(addr, size, true);
+		textureCache_.Invalidate(addr, size, type);
 	else
-		textureCache_.InvalidateAll(true);
+		textureCache_.InvalidateAll(type);
+
+	if (type != GPU_INVALIDATE_ALL)
+		framebufferManager_.UpdateFromMemory(addr, size);
 }
 
-void GLES_GPU::InvalidateCacheHint(u32 addr, int size) {
-	if (size > 0)
-		textureCache_.Invalidate(addr, size, false);
-	else
-		textureCache_.InvalidateAll(false);
+void GLES_GPU::UpdateMemory(u32 dest, u32 src, int size) {
+	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
 }
+
+void GLES_GPU::ClearCacheNextFrame() {
+	textureCache_.ClearNextFrame();
+}
+
 
 void GLES_GPU::Flush() {
 	transformDraw_.Flush();

@@ -3,9 +3,6 @@
 #include "ui/screen.h"
 #include "ui/ui.h"
 
-Screen::Screen(bool isUiScreen) : screenManager_(0), isUiScreen_(isUiScreen) { }
-Screen::~Screen() { }
-
 ScreenManager::ScreenManager() {
 	nextScreen_ = 0;
 	uiContext_ = 0;
@@ -41,40 +38,45 @@ void ScreenManager::update(InputState &input) {
 	}
 }
 
-void ScreenManager::switchToNext()
-{
+void ScreenManager::switchToNext() {
 	Layer temp = {0, 0};
-	if (!stack_.empty())
-	{
+	if (!stack_.empty()) {
 		temp = stack_.back();
 		stack_.pop_back();
 	}
 	Layer newLayer = {nextScreen_, 0};
 	stack_.push_back(newLayer);
-	delete temp.screen;
+	if (temp.screen) {
+		ELOG("Deleting screen");
+		delete temp.screen;
+	}
 	nextScreen_ = 0;
 }
 
-void ScreenManager::touch(int pointer, float x, float y, double time, TouchEvent event)
-{
-	if (stack_.size()) {
-		stack_.back().screen->touch(pointer, x, y, time, event);
-		return;
-	}
+void ScreenManager::touch(const TouchInput &touch) {
+	if (!stack_.empty())
+		stack_.back().screen->touch(touch);
 }
 
+void ScreenManager::key(const KeyInput &key) {
+	if (!stack_.empty())
+		stack_.back().screen->key(key);
+}
+
+void ScreenManager::axis(const AxisInput &axis) {
+	if (!stack_.empty())
+		stack_.back().screen->axis(axis);
+}
+
+
 void ScreenManager::render() {
-	if (stack_.size()) {
-		switch (stack_.back().flags)
-		{
+	if (!stack_.empty()) {
+		switch (stack_.back().flags) {
 		case LAYER_SIDEMENU:
-			if (stack_.size() == 1)
-			{
+			if (stack_.size() == 1) {
 				ELOG("Can't have sidemenu over nothing");
 				break;
-			}
-			else
-			{
+			} else {
 				auto iter = stack_.end();
 				iter--;
 				iter--;
@@ -97,22 +99,21 @@ void ScreenManager::render() {
 	processFinishDialog();
 }
 
-void ScreenManager::sendMessage(const char *msg, const char *value)
-{
-	if (stack_.size())
+void ScreenManager::sendMessage(const char *msg, const char *value) {
+	if (!stack_.empty())
 		stack_.back().screen->sendMessage(msg, value);
 }
 
-void ScreenManager::deviceLost()
-{
-	if (stack_.size())
-		stack_.back().screen->deviceLost();
+void ScreenManager::deviceLost() {
+	for (size_t i = 0; i < stack_.size(); i++) {
+		stack_[i].screen->deviceLost();
+	}
 	// Dialogs too? Nah, they should only use the standard UI texture anyway.
 	// TODO: Change this when it becomes necessary.
 }
 
 Screen *ScreenManager::topScreen() {
-	if (stack_.size())
+	if (!stack_.empty())
 		return stack_.back().screen;
 	else
 		return 0;
@@ -120,9 +121,7 @@ Screen *ScreenManager::topScreen() {
 
 void ScreenManager::shutdown() {
 	for (auto x = stack_.begin(); x != stack_.end(); x++)
-	{
 		delete x->screen;
-	}
 	stack_.clear();
 	delete nextScreen_;
 	nextScreen_ = 0;
@@ -134,6 +133,9 @@ void ScreenManager::push(Screen *screen, int layerFlags) {
 		switchToNext();
 	}
 	screen->setScreenManager(this);
+	if (screen->isTransparent()) {
+		layerFlags |= LAYER_TRANSPARENT;
+	}
 	Layer layer = {screen, layerFlags};
 	stack_.push_back(layer);
 }
@@ -147,10 +149,8 @@ void ScreenManager::pop() {
 	}
 }
 
-void ScreenManager::finishDialog(const Screen *dialog, DialogResult result)
-{
-	if (dialog != stack_.back().screen)
-	{
+void ScreenManager::finishDialog(const Screen *dialog, DialogResult result) {
+	if (dialog != stack_.back().screen) {
 		ELOG("Wrong dialog being finished!");
 		return;
 	}
@@ -162,16 +162,18 @@ void ScreenManager::finishDialog(const Screen *dialog, DialogResult result)
 	dialogResult_ = result;
 }
 
-void ScreenManager::processFinishDialog()
-{
-	if (dialogFinished_)
-	{
+void ScreenManager::processFinishDialog() {
+	if (dialogFinished_) {
 		if (stack_.size()) {
 			stack_.pop_back();
 		}
 
 		Screen *caller = topScreen();
-		caller->dialogFinished(dialogFinished_, dialogResult_);
+		if (caller) {
+			caller->dialogFinished(dialogFinished_, dialogResult_);
+		} else {
+			ELOG("ERROR: no top screen when finishing dialog");
+		}
 		delete dialogFinished_;
 		dialogFinished_ = 0;
 	}

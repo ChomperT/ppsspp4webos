@@ -16,22 +16,21 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "Common.h"
-#include "MIPS.h"
-#include "MIPSTables.h"
-#include "MIPSDebugInterface.h"
-#include "MIPSVFPUUtils.h"
-#include "../System.h"
-#include "../HLE/sceDisplay.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MIPSTables.h"
+#include "Core/MIPS/MIPSDebugInterface.h"
+#include "Core/MIPS/MIPSVFPUUtils.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
+#include "Core/System.h"
+#include "Core/HLE/sceDisplay.h"
 
 #if defined(ARM)
-#include "ARM/ArmJitCache.h"
 #include "ARM/ArmJit.h"
 #else
-#include "x86/JitCache.h"
 #include "x86/Jit.h"
 #endif
-#include "JitCommon/JitCommon.h"
-#include "../../Core/CoreTiming.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
+#include "Core/CoreTiming.h"
 
 MIPSState mipsr4k;
 MIPSState *currentMIPS = &mipsr4k;
@@ -98,15 +97,7 @@ void MIPSState::Reset()
 	rng.Init(0x1337);
 }
 
-void GMRng::DoState(PointerWrap &p)
-{
-	p.Do(m_w);
-	p.Do(m_z);
-	p.DoMarker("GMRng");
-}
-
-void MIPSState::DoState(PointerWrap &p)
-{
+void MIPSState::DoState(PointerWrap &p) {
 	// Reset the jit if we're loading.
 	if (p.mode == p.MODE_READ)
 		Reset();
@@ -127,7 +118,8 @@ void MIPSState::DoState(PointerWrap &p)
 	p.Do(fpcond);
 	p.Do(fcr0);
 	p.Do(fcr31);
-	rng.DoState(p);
+	p.Do(rng.m_w);
+	p.Do(rng.m_z);
 	p.Do(inDelaySlot);
 	p.Do(llBit);
 	p.Do(debugCount);

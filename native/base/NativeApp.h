@@ -10,6 +10,9 @@
 
 // This is defined in input/input_state.h.
 struct InputState;
+struct TouchInput;
+struct KeyInput;
+struct AxisInput;
 
 // The first function to get called, just write strings to the two pointers.
 // This might get called multiple times in some implementations, you must be able to handle that.
@@ -45,12 +48,9 @@ void NativeUpdate(InputState &input);
 // Useful for triggering audio events, saving a few ms.
 // If you don't care about touch latency, just do a no-op implementation of this.
 // time is not yet implemented. finger can be from 0 to 7, inclusive.
-enum TouchEvent {
-  TOUCH_DOWN,
-  TOUCH_MOVE,
-  TOUCH_UP,
-};
-void NativeTouch(int finger, float x, float y, double time, TouchEvent event);
+void NativeTouch(const TouchInput &touch);
+void NativeKey(const KeyInput &key);
+void NativeAxis(const AxisInput &axis);
 
 // Called when it's time to render. If the device can keep up, this
 // will also be called sixty times per second. Main thread.
@@ -61,7 +61,9 @@ void NativeRender();
 // of num_samples.
 // This function may be called from a totally separate thread from
 // the rest of the game, so be careful with synchronization.
-void NativeMix(short *audio, int num_samples);
+// Returns the number of samples actually output. The app should do everything it can
+// to fill the buffer completely.
+int NativeMix(short *audio, int num_samples);
 void NativeSetMixer(void* mixer);
 
 // Called when it's time to shutdown. After this has been called,

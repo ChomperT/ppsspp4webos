@@ -12,8 +12,7 @@ bool readDataFromFile(bool text_file, unsigned char* &data, const unsigned int s
 
 // Beginnings of a directory utility system. TODO: Improve.
 
-struct FileInfo
-{
+struct FileInfo {
 	std::string name;
 	std::string fullName;
 	bool exists;
@@ -21,22 +20,20 @@ struct FileInfo
 	bool isWritable;
 	size_t size;
 
-	bool operator <(const FileInfo &other) const {
-		if (isDirectory && !other.isDirectory)
-			return true;
-		else if (!isDirectory && other.isDirectory)
-			return false;
-		if (name < other.name)
-			return true;
-		else
-			return false;
-	}
+	bool operator <(const FileInfo &other) const;
 };
 
 std::string getFileExtension(const std::string &fn);
+std::string getDir(const std::string &path);
+std::string getFilename(std::string path);
 bool getFileInfo(const char *path, FileInfo *fileInfo);
 size_t getFilesInDir(const char *directory, std::vector<FileInfo> *files, const char *filter = 0);
 void deleteFile(const char *file);
+void deleteDir(const char *file);
 bool exists(const std::string &filename);
 void mkDir(const std::string &path);
 std::string getDir(const std::string &path);
+
+#ifdef _WIN32
+std::vector<std::string> getWindowsDrives();
+#endif

@@ -15,16 +15,14 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
-#include "../Config.h"
-#include "../Host.h"
-#include "../SaveState.h"
+#include <cstdlib>
+#include "Core/Config.h"
+#include "Core/System.h"
+#include "Core/Host.h"
+#include "Core/SaveState.h"
 #include "HLE.h"
-#include "../MIPS/MIPS.h"
-#include "../HW/MemoryStick.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/HW/MemoryStick.h"
 #include "Core/CoreTiming.h"
 #include "Core/Reporting.h"
 
@@ -51,6 +49,8 @@ const int ERROR_ERRNO_FILE_ALREADY_EXISTS          = 0x80010011;
 const int ERROR_MEMSTICK_DEVCTL_BAD_PARAMS         = 0x80220081;
 const int ERROR_MEMSTICK_DEVCTL_TOO_MANY_CALLBACKS = 0x80220082;
 const int ERROR_KERNEL_BAD_FILE_DESCRIPTOR		   = 0x80020323;
+
+const int ERROR_PGD_INVALID_HEADER				   = 0x80510204;
 
 #define PSP_DEV_TYPE_ALIAS 0x20
 
@@ -97,7 +97,13 @@ typedef s32 SceMode;
 typedef s64 SceOff;
 typedef u64 SceIores;
 
-int asyncNotifyEvent = -1;
+const int PSP_COUNT_FDS = 64;
+// TODO: Should be 3, and stdin/stdout/stderr are special values aliased to 0?
+const int PSP_MIN_FD = 4;
+static int asyncNotifyEvent = -1;
+static SceUID fds[PSP_COUNT_FDS];
+
+u32 ioErrorCode = 0;
 
 #define SCE_STM_FDIR 0x1000
 #define SCE_STM_FREG 0x2000
@@ -141,9 +147,10 @@ struct dirent {
 
 class FileNode : public KernelObject {
 public:
-	FileNode() : callbackID(0), callbackArg(0), asyncResult(0), pendingAsyncResult(false), sectorBlockMode(false), closePending(false), npdrm(0), pgdInfo(NULL) {}
+	FileNode() : callbackID(0), callbackArg(0), asyncResult(0), hasAsyncResult(false), pendingAsyncResult(false), sectorBlockMode(false), closePending(false), npdrm(0), pgdInfo(NULL) {}
 	~FileNode() {
 		pspFileSystem.CloseFile(handle);
+		pgd_close(pgdInfo);
 	}
 	const char *GetName() {return fullpath.c_str();}
 	const char *GetTypeName() {return "OpenFile";}
@@ -151,6 +158,7 @@ public:
 		sprintf(ptr, "Seekpos: %08x", (u32)pspFileSystem.GetSeekPos(handle));
 	}
 	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_BADF; }
+	static int GetStaticIDType() { return PPSSPP_KERNEL_TMID_File; }
 	int GetIDType() const { return PPSSPP_KERNEL_TMID_File; }
 
 	virtual void DoState(PointerWrap &p) {
@@ -159,13 +167,26 @@ public:
 		p.Do(callbackID);
 		p.Do(callbackArg);
 		p.Do(asyncResult);
+		p.Do(hasAsyncResult);
 		p.Do(pendingAsyncResult);
 		p.Do(sectorBlockMode);
 		p.Do(closePending);
 		p.Do(info);
 		p.Do(openMode);
 
-		// TODO: Savestate PGD files?
+		p.Do(npdrm);
+		p.Do(pgd_offset);
+		bool hasPGD = pgdInfo != NULL;
+		p.Do(hasPGD);
+		if (hasPGD) {
+			if (p.mode == p.MODE_READ) {
+				pgdInfo = (PGD_DESC*) malloc(sizeof(PGD_DESC));
+			}
+			p.DoVoid(pgdInfo, sizeof(PGD_DESC));
+			if (p.mode == p.MODE_READ) {
+				pgdInfo->block_buf = (u8 *)malloc(pgdInfo->block_size * 2);
+			}
+		}
 
 		p.DoMarker("File");
 	}
@@ -177,6 +198,7 @@ public:
 	u32 callbackArg;
 
 	s64 asyncResult;
+	bool hasAsyncResult;
 	bool pendingAsyncResult;
 
 	bool sectorBlockMode;
@@ -187,6 +209,7 @@ public:
 	u32 openMode;
 
 	u32 npdrm;
+	u32 pgd_offset;
 	PGD_DESC *pgdInfo;
 };
 
@@ -196,10 +219,41 @@ public:
 
 /******************************************************************************/
 
-void __IoCompleteAsyncIO(SceUID id);
+void __IoCompleteAsyncIO(int fd);
 
 static void TellFsThreadEnded (SceUID threadID) {
 	pspFileSystem.ThreadEnded(threadID);
+}
+
+FileNode *__IoGetFd(int fd, u32 &error) {
+	if (fd < 0 || fd >= PSP_COUNT_FDS) {
+		error = ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+		return NULL;
+	}
+
+	return kernelObjects.Get<FileNode>(fds[fd], error);
+}
+
+int __IoAllocFd(FileNode *f) {
+	// The PSP takes the lowest available id after stderr/etc.
+	for (int possible = PSP_MIN_FD; possible < PSP_COUNT_FDS; ++possible) {
+		if (fds[possible] == 0) {
+			fds[possible] = f->GetUID();
+			return possible;
+		}
+	}
+
+	// Bugger, out of fds...
+	return SCE_KERNEL_ERROR_MFILE;
+}
+
+void __IoFreeFd(int fd, u32 &error) {
+	if (fd < PSP_MIN_FD || fd >= PSP_COUNT_FDS) {
+		error = ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+	} else {
+		error = kernelObjects.Destroy<FileNode>(fds[fd]);
+		fds[fd] = 0;
+	}
 }
 
 // Async IO seems to work roughly like this:
@@ -219,7 +273,7 @@ static void TellFsThreadEnded (SceUID threadID) {
 // For now, let's at least delay the callback mnotification.
 void __IoAsyncNotify(u64 userdata, int cyclesLate) {
 	SceUID threadID = userdata >> 32;
-	SceUID fd = (SceUID) (userdata & 0xFFFFFFFF);
+	int fd = (int) (userdata & 0xFFFFFFFF);
 	__IoCompleteAsyncIO(fd);
 
 	u32 error;
@@ -228,9 +282,14 @@ void __IoAsyncNotify(u64 userdata, int cyclesLate) {
 	if (waitID == fd && error == 0) {
 		__KernelResumeThreadFromWait(threadID, 0);
 
-		FileNode *f = kernelObjects.Get<FileNode>(fd, error);
+		FileNode *f = __IoGetFd(fd, error);
 		if (Memory::IsValidAddress(address) && f) {
 			Memory::Write_U64((u64) f->asyncResult, address);
+		}
+
+		// If this was a sceIoCloseAsync, we should close it at this point.
+		if (f->closePending) {
+			__IoFreeFd(fd, error);
 		}
 	}
 }
@@ -242,31 +301,9 @@ void __IoInit() {
 
 	asyncNotifyEvent = CoreTiming::RegisterEvent("IoAsyncNotify", __IoAsyncNotify);
 
-#ifdef _WIN32
-
-	char path_buffer[_MAX_PATH], drive[_MAX_DRIVE] ,dir[_MAX_DIR], file[_MAX_FNAME], ext[_MAX_EXT];
-	char memstickpath[_MAX_PATH];
-	char flash0path[_MAX_PATH];
-
-	GetModuleFileName(NULL,path_buffer,sizeof(path_buffer));
-
-	char *winpos = strstr(path_buffer, "Windows");
-	if (winpos)
-	*winpos = 0;
-	strcat(path_buffer, "dummy.txt");
-
-	_splitpath_s(path_buffer, drive, dir, file, ext );
-
-	// Mount a couple of filesystems
-	sprintf(memstickpath, "%s%smemstick\\", drive, dir);
-	sprintf(flash0path, "%s%sflash0\\", drive, dir);
-
-#else
-	// TODO
-	std::string memstickpath = g_Config.memCardDirectory;
-	std::string flash0path = g_Config.flashDirectory;
-#endif
-
+	std::string memstickpath;
+	std::string flash0path;
+	GetSysDirectories(memstickpath, flash0path);
 
 	DirectoryFileSystem *memstick = new DirectoryFileSystem(&pspFileSystem, memstickpath);
 #ifdef ANDROID
@@ -280,9 +317,12 @@ void __IoInit() {
 	pspFileSystem.Mount("flash0:", flash0);
 	
 	__KernelListenThreadEnd(&TellFsThreadEnded);
+
+	memset(fds, 0, sizeof(fds));
 }
 
 void __IoDoState(PointerWrap &p) {
+	p.DoArray(fds, ARRAY_SIZE(fds));
 	p.Do(asyncNotifyEvent);
 	CoreTiming::RestoreRegisterEvent(asyncNotifyEvent, "IoAsyncNotify", __IoAsyncNotify);
 }
@@ -292,9 +332,9 @@ void __IoShutdown() {
 
 u32 __IoGetFileHandleFromId(u32 id, u32 &outError)
 {
-	FileNode *f = kernelObjects.Get < FileNode > (id, outError);
+	FileNode *f = __IoGetFd(id, outError);
 	if (!f) {
-		return -1;
+		return (u32)-1;
 	}
 	return f->handle;
 }
@@ -342,14 +382,15 @@ u32 sceKernelStderr() {
 	return 2;
 }
 
-void __IoCompleteAsyncIO(SceUID id) {
+void __IoCompleteAsyncIO(int fd) {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(fd, error);
 	if (f) {
 		if (f->callbackID) {
 			__KernelNotifyCallback(THREAD_CALLBACK_IO, f->callbackID, f->callbackArg);
 		}
 		f->pendingAsyncResult = false;
+		f->hasAsyncResult = true;
 	}
 }
 
@@ -383,11 +424,12 @@ void __IoGetStat(SceIoStat *stat, PSPFileInfo &info) {
 	stat->st_private[0] = info.startSector;
 }
 
-void __IoSchedAsync(FileNode *f, SceUID fd, int usec) {
+void __IoSchedAsync(FileNode *f, int fd, int usec) {
 	u64 param = ((u64)__KernelGetCurThread()) << 32 | fd;
 	CoreTiming::ScheduleEvent(usToCycles(usec), asyncNotifyEvent, param);
 
 	f->pendingAsyncResult = true;
+	f->hasAsyncResult = false;
 }
 
 u32 sceIoGetstat(const char *filename, u32 addr) {
@@ -433,7 +475,7 @@ u32 sceIoChstat(const char *filename, u32 iostatptr, u32 changebits) {
 
 u32 npdrmRead(FileNode *f, u8 *data, int size) {
 	PGD_DESC *pgd = f->pgdInfo;
-	u32 block, offset;
+	u32 block, offset, blockPos;
 	u32 remain_size, copy_size;
 
 	block  = pgd->file_offset/pgd->block_size;
@@ -444,6 +486,8 @@ u32 npdrmRead(FileNode *f, u8 *data, int size) {
 	while(remain_size){
 	
 		if(pgd->current_block!=block){
+			blockPos = block*pgd->block_size;
+			pspFileSystem.SeekFile(f->handle, (s32)pgd->data_offset+blockPos, FILEMOVE_BEGIN);
 			pspFileSystem.ReadFile(f->handle, pgd->block_buf, pgd->block_size);
 			pgd_decrypt_block(pgd, block);
 			pgd->current_block = block;
@@ -474,7 +518,7 @@ int __IoRead(int id, u32 data_addr, int size) {
 	}
 
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		if(!(f->openMode & FILEACCESS_READ))
 		{
@@ -500,11 +544,18 @@ int __IoRead(int id, u32 data_addr, int size) {
 }
 
 u32 sceIoRead(int id, u32 data_addr, int size) {
+	// TODO: Check id is valid first?
+	if (!__KernelIsDispatchEnabled() && id > 2)
+		return -1;
+
 	int result = __IoRead(id, data_addr, size);
 	if (result >= 0) {
 		DEBUG_LOG(HLE, "%x=sceIoRead(%d, %08x, %x)", result, id, data_addr, size);
 		// TODO: Timing is probably not very accurate, low estimate.
-		return hleDelayResult(result, "io read", result / 100);
+		int us = result/100;
+		if(us==0)
+			us = 100;
+		return hleDelayResult(result, "io read", us);
 	}
 	else
 		return result;
@@ -512,11 +563,14 @@ u32 sceIoRead(int id, u32 data_addr, int size) {
 
 u32 sceIoReadAsync(int id, u32 data_addr, int size) {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		f->asyncResult = __IoRead(id, data_addr, size);
 		// TODO: Not sure what the correct delay is (and technically we shouldn't read into the buffer yet...)
-		__IoSchedAsync(f, id, size / 100);
+		int us = f->asyncResult/100;
+		if(us==0)
+			us = 100;
+		__IoSchedAsync(f, id, us);
 		DEBUG_LOG(HLE, "%llx=sceIoReadAsync(%d, %08x, %x)", f->asyncResult, id, data_addr, size);
 		return 0;
 	} else {
@@ -526,22 +580,15 @@ u32 sceIoReadAsync(int id, u32 data_addr, int size) {
 }
 
 int __IoWrite(int id, void *data_ptr, int size) {
-	if (id == 2) {
-		//stderr!
-		const char *str = (const char*) data_ptr;
-		INFO_LOG(HLE, "stderr: %s", str);
-		return size;
-	} else if (id == 1) {
-		//stdout!
-		char *str = (char *) data_ptr;
-		char temp = str[size];
-		str[size] = 0;
-		INFO_LOG(HLE, "stdout: %s", str);
-		str[size] = temp;
+	// Let's handle stdout/stderr specially.
+	if (id == 1 || id == 2) {
+		const char *str = (const char *) data_ptr;
+		const int str_size = size == 0 ? 0 : (str[size - 1] == '\n' ? size - 1 : size);
+		INFO_LOG(HLE, "%s: %.*s", id == 1 ? "stdout" : "stderr", str_size, str);
 		return size;
 	}
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		if(!(f->openMode & FILEACCESS_WRITE)) {
 			return ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -554,11 +601,21 @@ int __IoWrite(int id, void *data_ptr, int size) {
 }
 
 u32 sceIoWrite(int id, u32 data_addr, int size) {
+	// TODO: Check id is valid first?
+	if (!__KernelIsDispatchEnabled() && id > 2)
+		return -1;
+
 	int result = __IoWrite(id, Memory::GetPointer(data_addr), size);
 	if (result >= 0) {
 		DEBUG_LOG(HLE, "%x=sceIoWrite(%d, %08x, %x)", result, id, data_addr, size);
 		// TODO: Timing is probably not very accurate, low estimate.
-		return hleDelayResult(result, "io write", result / 100);
+		int us = result/100;
+		if(us==0)
+			us = 100;
+		if (__KernelIsDispatchEnabled())
+			return hleDelayResult(result, "io write", us);
+		else
+			return result;
 	}
 	else
 		return result;
@@ -566,11 +623,14 @@ u32 sceIoWrite(int id, u32 data_addr, int size) {
 
 u32 sceIoWriteAsync(int id, u32 data_addr, int size) {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		f->asyncResult = __IoWrite(id, Memory::GetPointer(data_addr), size);
 		// TODO: Not sure what the correct delay is (and technically we shouldn't read into the buffer yet...)
-		__IoSchedAsync(f, id, size / 100);
+		int us = f->asyncResult/100;
+		if(us==0)
+			us = 100;
+		__IoSchedAsync(f, id, us);
 		DEBUG_LOG(HLE, "%llx=sceIoWriteAsync(%d, %08x, %x)", f->asyncResult, id, data_addr, size);
 		return 0;
 	} else {
@@ -581,9 +641,9 @@ u32 sceIoWriteAsync(int id, u32 data_addr, int size) {
 
 u32 sceIoGetDevType(int id) 
 {
-	ERROR_LOG(HLE, "UNIMPL sceIoGetDevType(%d)", id);
+	ERROR_LOG_REPORT(HLE, "UNIMPL sceIoGetDevType(%d)", id);
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	int result;
 	if (f) 
 		result = PSP_DEV_TYPE_ALIAS;
@@ -597,9 +657,9 @@ u32 sceIoGetDevType(int id)
 
 u32 sceIoCancel(int id) 
 {
-	ERROR_LOG(HLE, "UNIMPL sceIoCancel(%d)", id);
+	ERROR_LOG_REPORT(HLE, "UNIMPL sceIoCancel(%d)", id);
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		// TODO: Cancel the async operation if possible?
 	} else {
@@ -612,7 +672,7 @@ u32 sceIoCancel(int id)
 
 u32 npdrmLseek(FileNode *f, s32 where, FileMove whence)
 {
-	u32 newPos;
+	u32 newPos, blockPos;
 
 	if(whence==FILEMOVE_BEGIN){
 		newPos = where;
@@ -627,14 +687,15 @@ u32 npdrmLseek(FileNode *f, s32 where, FileMove whence)
 	}
 
 	f->pgdInfo->file_offset = newPos;
-	pspFileSystem.SeekFile(f->handle, (s32)f->pgdInfo->data_offset+newPos, whence);
+	blockPos = newPos&~(f->pgdInfo->block_size-1);
+	pspFileSystem.SeekFile(f->handle, (s32)f->pgdInfo->data_offset+blockPos, whence);
 
 	return newPos;
 }
 
 s64 __IoLseek(SceUID id, s64 offset, int whence) {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		FileMove seek = FILEMOVE_BEGIN;
 
@@ -652,15 +713,14 @@ s64 __IoLseek(SceUID id, s64 offset, int whence) {
 			seek = FILEMOVE_END;
 			break;
 		}
+
+		if(f->npdrm)
+			return npdrmLseek(f, (s32)offset, seek);
+
 		// Yes, -1 is the correct return code for this case.
 		if (newPos < 0)
 			return -1;
-
-		if(f->npdrm){
-			return npdrmLseek(f, (s32)offset, seek);
-		}else{
-			return pspFileSystem.SeekFile(f->handle, (s32) offset, seek);
-		}
+		return pspFileSystem.SeekFile(f->handle, (s32) offset, seek);
 	} else {
 		return (s32) error;
 	}
@@ -692,7 +752,7 @@ u32 sceIoLseek32(int id, int offset, int whence) {
 
 u32 sceIoLseekAsync(int id, s64 offset, int whence) {
 	u32 error;
-	FileNode *f = kernelObjects.Get<FileNode>(id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		f->asyncResult = __IoLseek(id, offset, whence);
 		// Educated guess at timing.
@@ -708,7 +768,7 @@ u32 sceIoLseekAsync(int id, s64 offset, int whence) {
 
 u32 sceIoLseek32Async(int id, int offset, int whence) {
 	u32 error;
-	FileNode *f = kernelObjects.Get<FileNode>(id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		f->asyncResult = __IoLseek(id, offset, whence);
 		// Educated guess at timing.
@@ -735,6 +795,9 @@ FileNode *__IoOpen(const char* filename, int flags, int mode) {
 		access |= FILEACCESS_CREATE;
 
 	PSPFileInfo info = pspFileSystem.GetFileInfo(filename);
+
+	ioErrorCode = 0;
+
 	u32 h = pspFileSystem.OpenFile(filename, (FileAccess) access);
 	if (h == 0) {
 		return NULL;
@@ -749,33 +812,49 @@ FileNode *__IoOpen(const char* filename, int flags, int mode) {
 	f->openMode = access;
 
 	f->npdrm = (flags & O_NPDRM)? true: false;
+	f->pgd_offset = 0;
 
 	return f;
 }
 
 u32 sceIoOpen(const char* filename, int flags, int mode) {
+	if (!__KernelIsDispatchEnabled())
+		return -1;
+
 	FileNode *f = __IoOpen(filename, flags, mode);
-	if (f == NULL) {
-		ERROR_LOG(HLE, "ERROR_ERRNO_FILE_NOT_FOUND=sceIoOpen(%s, %08x, %08x) - file not found", filename, flags, mode);
-		// Timing is not accurate, aiming low for now.
-		return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "file opened", 100);
+	if (f == NULL) 
+	{
+		 //Timing is not accurate, aiming low for now.
+		if (ioErrorCode == SCE_KERNEL_ERROR_NOCWD)
+		{
+			ERROR_LOG(HLE, "SCE_KERNEL_ERROR_NOCWD=sceIoOpen(%s, %08x, %08x) - no current working directory", filename, flags, mode);
+			return hleDelayResult(SCE_KERNEL_ERROR_NOCWD , "no cwd", 10000);
+		}
+		else
+		{
+			ERROR_LOG(HLE, "ERROR_ERRNO_FILE_NOT_FOUND=sceIoOpen(%s, %08x, %08x) - file not found", filename, flags, mode);
+			return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND , "file opened", 10000);
+		}
 	}
 
-	SceUID id = f->GetUID();
-	DEBUG_LOG(HLE, "%i=sceIoOpen(%s, %08x, %08x)", id, filename, flags, mode);
-	// Timing is not accurate, aiming low for now.
-	return hleDelayResult(id, "file opened", 100);
+	int id = __IoAllocFd(f);
+	if (id < 0) {
+		ERROR_LOG(HLE, "%08x=sceIoOpen(%s, %08x, %08x): out of fds", id, filename, flags, mode);
+		kernelObjects.Destroy<FileNode>(f->GetUID());
+		return id;
+	} else {
+		DEBUG_LOG(HLE, "%i=sceIoOpen(%s, %08x, %08x)", id, filename, flags, mode);
+		// Timing is not accurate, aiming low for now.
+		return hleDelayResult(id, "file opened", 100);
+	}
 }
 
 u32 sceIoClose(int id) {
 	u32 error;
 	DEBUG_LOG(HLE, "sceIoClose(%d)", id);
-	FileNode *f = kernelObjects.Get<FileNode>(id, error);
-	if(f && f->npdrm){
-		pgd_close(f->pgdInfo);
-	}
+	__IoFreeFd(id, error);
 	// Timing is not accurate, aiming low for now.
-	return hleDelayResult(kernelObjects.Destroy<FileNode>(id), "file closed", 100);
+	return hleDelayResult(error, "file closed", 100);
 }
 
 u32 sceIoRemove(const char *filename) {
@@ -827,38 +906,94 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 
 	// UMD checks
 	switch (cmd) {
-	case 0x01F20001:  // Get Disc Type.
-		if (Memory::IsValidAddress(outPtr + 4)) {
-			Memory::Write_U32(0x10, outPtr + 4);  // Game disc
+	case 0x01F20001:  
+		// Get UMD disc type
+		if (Memory::IsValidAddress(outPtr) && outLen >= 8) {
+			Memory::Write_U32(0x10, outPtr + 4);  // Always return game disc (if present)
 			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 		}
-		return -1;
-	case 0x01F20002:  // Get last sector number.
-	case 0x01F20003:  // Seems identical?
-		if (Memory::IsValidAddress(outPtr)) {
+		break;
+	case 0x01F20002:  
+		// Get UMD current LBA
+		if (Memory::IsValidAddress(outPtr) && outLen >= 4) {
+			Memory::Write_U32(0x10, outPtr);  // Assume first sector
+			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+		}
+		break;
+	case 0x01F20003:
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
 			PSPFileInfo info = pspFileSystem.GetFileInfo("umd1:");
 			Memory::Write_U32((u32) (info.size / 2048) - 1, outPtr);
 			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 		}
-		return -1;
-	case 0x01F100A3:  // Seek
-		// Timing is just a rough guess, probably takes longer.
-		return hleDelayResult(0, "dev seek", 100);
-	case 0x01F100A4:  // Cache
-		return 0;
-	case 0x01F300A5:  // Cache + status
-		if (Memory::IsValidAddress(outPtr)) {
-			Memory::Write_U32(1, outPtr);
+		break;
+	case 0x01F100A3:  
+		// Seek UMD disc (raw)
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
+			return hleDelayResult(0, "dev seek", 100);
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+		}
+		break;
+	case 0x01F100A4:  
+		// Prepare UMD data into cache.
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
 			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 		}
-		return -1;
+		break;
+	case 0x01F300A5:  
+		// Prepare UMD data into cache and get status
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
+			Memory::Write_U32(1, outPtr); // Status (unitary index of the requested read, greater or equal to 1)
+			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+		}
+		break;
+	case 0x01F300A7:
+		// Wait for the UMD data cache thread
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
+			// TODO : 
+			// Place the calling thread in wait state
+			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+		}
+		break;
+	case 0x01F300A8:
+		// Poll the UMD data cache thread
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
+			// 0 - UMD data cache thread has finished
+			// 0x10 - UMD data cache thread is waiting
+			// 0x20 - UMD data cache thread is running
+			return 0; // Return finished
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+		}
+		break;
+	case 0x01F300A9:
+		// Cancel the UMD data cache thread
+		if (Memory::IsValidAddress(argAddr) && argLen >= 4) {
+			// TODO :
+			// Wake up the thread waiting for the UMD data cache handling.
+			return 0;
+		} else {
+			return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+		}
+		break;
 	// TODO: What does these do?  Seem to require a u32 in, no output.
 	case 0x01F100A6:
 	case 0x01F100A8:
 	case 0x01F100A9:
-	case 0x01F300A7:
-		Reporting::ReportMessage("sceIoDevctl(\"%s\", %08x, %08x, %i, %08x, %i)", name, cmd, argAddr, argLen, outPtr, outLen);
-		ERROR_LOG(HLE, "UNIMPL sceIoDevctl(\"%s\", %08x, %08x, %i, %08x, %i)", name, cmd, argAddr, argLen, outPtr, outLen);
+		ERROR_LOG_REPORT(HLE, "UNIMPL sceIoDevctl(\"%s\", %08x, %08x, %i, %08x, %i)", name, cmd, argAddr, argLen, outPtr, outLen);
 		return 0;
 	}
 
@@ -866,10 +1001,19 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 
 	if (!strcmp(name, "mscmhc0:") || !strcmp(name, "ms0:"))
 	{
-		switch (cmd)
-		{
-		// does one of these set a callback as well? (see coded arms)
-		case 0x02015804:	// Register callback
+		// MemorySticks Checks
+		switch (cmd) {
+		case 0x02025801:	
+			// Check the MemoryStick's driver status (mscmhc0).
+			if (Memory::IsValidAddress(outPtr)) {
+				Memory::Write_U32(4, outPtr);  // JPSCP: The right return value is 4 for some reason
+				return 0;
+			} else {
+				return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+			}
+			break;
+		case 0x02015804:	
+			// Register MemoryStick's insert/eject callback (mscmhc0)
 			if (Memory::IsValidAddress(argAddr) && argLen == 4) {
 				u32 cbId = Memory::Read_U32(argAddr);
 				if (0 == __KernelRegisterCallback(THREAD_CALLBACK_MEMORYSTICK, cbId)) {
@@ -877,12 +1021,14 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 					__KernelNotifyCallbackType(THREAD_CALLBACK_MEMORYSTICK, cbId, MemoryStick_State());
 					return 0;
 				} else {
-					return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
+					return ERROR_MEMSTICK_DEVCTL_TOO_MANY_CALLBACKS;
 				}
+			} else {
+				return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 			}
 			break;
-
-		case 0x02025805:	// Unregister callback
+		case 0x02025805:	
+			// Unregister MemoryStick's insert/eject callback (mscmhc0)
 			if (Memory::IsValidAddress(argAddr) && argLen == 4) {
 				u32 cbId = Memory::Read_U32(argAddr);
 				if (0 == __KernelUnregisterCallback(THREAD_CALLBACK_MEMORYSTICK, cbId)) {
@@ -891,28 +1037,25 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				} else {
 					return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 				}
-			}
-			break;
-
-		case 0x02025801:	// Memstick Driver status?
-			if (Memory::IsValidAddress(outPtr) && outLen >= 4) {
-				Memory::Write_U32(4, outPtr);  // JPSCP: The right return value is 4 for some reason
-				return 0;
 			} else {
 				return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 			}
-
-		case 0x02025806:	// Memory stick inserted?
-			if (Memory::IsValidAddress(outPtr) && outLen >= 4) {
+			break;
+		case 0x02025806:	
+			// Check if the device is inserted (mscmhc0)
+			if (Memory::IsValidAddress(outPtr)) {
+				// 0 = Not inserted.
+				// 1 = Inserted.
 				Memory::Write_U32(1, outPtr);
 				return 0;
 			} else {
 				return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 			}
-
-		case 0x02425818:  // Get memstick size etc
+			break;
+		case 0x02425818:  
+			// // Get MS capacity (fatms0).
 			// Pretend we have a 2GB memory stick.
-			if (Memory::IsValidAddress(argAddr) && argLen >= 4) {  // "Should" be outPtr but isn't
+			if (Memory::IsValidAddress(argAddr) && argLen >= 4) {  // NOTE: not outPtr
 				u32 pointer = Memory::Read_U32(argAddr);
 				u32 sectorSize = 0x200;
 				u32 memStickSectorSize = 32 * 1024;
@@ -925,13 +1068,11 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				deviceSize.sectorSize = sectorSize;
 				deviceSize.sectorCount = sectorCount;
 				Memory::WriteStruct(pointer, &deviceSize);
-				DEBUG_LOG(HLE, "Returned memstick size: maxSectors=%i", deviceSize.maxSectors);
 				return 0;
 			} else {
-				ERROR_LOG(HLE, "memstick size query: bad params");
 				return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 			}
-
+			break;
 		case 0x02425824:  // Check if write protected
 			if (Memory::IsValidAddress(outPtr) && outLen == 4) {
 				Memory::Write_U32(0, outPtr);
@@ -940,6 +1081,7 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				ERROR_LOG(HLE, "Failed 0x02425824 fat");
 				return -1;
 			}
+			break;
 		}
 	}
 
@@ -958,8 +1100,9 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				}
 			}
 			break;
-		case 0x02415822: // MScmUnregisterMSInsertEjectCallback
+		case 0x02415822: 
 			{
+				// MScmUnregisterMSInsertEjectCallback
 				u32 cbId = Memory::Read_U32(argAddr);
 				if (0 == __KernelUnregisterCallback(THREAD_CALLBACK_MEMORYSTICK_FAT, cbId)) {
 					DEBUG_LOG(HLE, "sceIoDevCtl: Unregistered memstick FAT callback %i", cbId);
@@ -968,8 +1111,9 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 					return -1;
 				}
 			}
-
-		case 0x02415823:  // Set FAT as enabled
+			break;
+		case 0x02415823:  
+			// Set FAT as enabled
 			if (Memory::IsValidAddress(argAddr) && argLen == 4) {
 				MemoryStick_SetFatState((MemStickFatState)Memory::Read_U32(argAddr));
 				return 0;
@@ -978,18 +1122,25 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				return -1;
 			}
 			break;
-
-		case 0x02425823:  // Check if FAT enabled
-			if (Memory::IsValidAddress(outPtr) && outLen == 4) {
+		case 0x02425823:  
+			// Check if FAT enabled
+			hleEatCycles(23500);
+			// If the values added together are >= 0x80000000, or less than outPtr, invalid address.
+			if (((int)outPtr + outLen) < (int)outPtr) {
+				ERROR_LOG(HLE, "sceIoDevctl: fatms0: 0x02425823 command, bad address");
+				return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+			} else if (!Memory::IsValidAddress(outPtr)) {
+				// Technically, only checks for NULL, crashes for many bad addresses.
+				ERROR_LOG(HLE, "sceIoDevctl: fatms0: 0x02425823 command, no output address");
+				return SCE_KERNEL_ERROR_ERRNO_INVALID_ARGUMENT;
+			} else {
+				// Does not care about outLen, even if it's 0.
 				Memory::Write_U32(MemoryStick_FatState(), outPtr);
 				return 0;
-			} else {
-				ERROR_LOG(HLE, "Failed 0x02425823 fat");
-				return -1;
 			}
 			break;
-
-		case 0x02425824:  // Check if write protected
+		case 0x02425824:  
+			// Check if write protected
 			if (Memory::IsValidAddress(outPtr) && outLen == 4) {
 				Memory::Write_U32(0, outPtr);
 				return 0;
@@ -998,36 +1149,34 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 				return -1;
 			}
 			break;
-
-		case 0x02425818:  // Get memstick size etc
+		case 0x02425818:  
+			// // Get MS capacity (fatms0).
 			// Pretend we have a 2GB memory stick.
-			{
-				if (Memory::IsValidAddress(argAddr) && argLen >= 4) {  // NOTE: not outPtr
-					u32 pointer = Memory::Read_U32(argAddr);
-					u32 sectorSize = 0x200;
-					u32 memStickSectorSize = 32 * 1024;
-					u32 sectorCount = memStickSectorSize / sectorSize;
-					u64 freeSize = 1 * 1024 * 1024 * 1024;
-					DeviceSize deviceSize;
-					deviceSize.maxClusters = (u32)((freeSize  * 95 / 100) / (sectorSize * sectorCount));
-					deviceSize.freeClusters = deviceSize.maxClusters;
-					deviceSize.maxSectors = deviceSize.maxClusters;
-					deviceSize.sectorSize = sectorSize;
-					deviceSize.sectorCount = sectorCount;
-					Memory::WriteStruct(pointer, &deviceSize);
-					return 0;
-				} else {
-					return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
-				}
+			if (Memory::IsValidAddress(argAddr) && argLen >= 4) {  // NOTE: not outPtr
+				u32 pointer = Memory::Read_U32(argAddr);
+				u32 sectorSize = 0x200;
+				u32 memStickSectorSize = 32 * 1024;
+				u32 sectorCount = memStickSectorSize / sectorSize;
+				u64 freeSize = 1 * 1024 * 1024 * 1024;
+				DeviceSize deviceSize;
+				deviceSize.maxClusters = (u32)((freeSize  * 95 / 100) / (sectorSize * sectorCount));
+				deviceSize.freeClusters = deviceSize.maxClusters;
+				deviceSize.maxSectors = deviceSize.maxClusters;
+				deviceSize.sectorSize = sectorSize;
+				deviceSize.sectorCount = sectorCount;
+				Memory::WriteStruct(pointer, &deviceSize);
+				return 0;
+			} else {
+				return ERROR_MEMSTICK_DEVCTL_BAD_PARAMS;
 			}
+			break;
 		}
 	}
 
 	if (!strcmp(name, "kemulator:") || !strcmp(name, "emulator:"))
 	{
 		// Emulator special tricks!
-		switch (cmd)
-		{
+		switch (cmd) {
 		case 1:	// EMULATOR_DEVCTL__GET_HAS_DISPLAY
 			if (Memory::IsValidAddress(outPtr))
 				Memory::Write_U32(0, outPtr);	 // TODO: Make a headless mode for running tests!
@@ -1074,10 +1223,7 @@ u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 outPtr, 
 	//089c6d1c weird branch
 	/*
 	089c6bdc ]: HLE: sceKernelCreateCallback(name= MemoryStick Detection ,entry= 089c7484 ) (z_un_089c6bc4)
-	089c6c18 ]: HLE: sceIoDevctl("mscmhc0:", 02015804, 09ffb9c0, 4, 00000000, 0) (z_un_089c6bc4)
 	089c6c40 ]: HLE: sceKernelCreateCallback(name= MemoryStick Assignment ,entry= 089c7534 ) (z_un_089c6bc4)
-	089c6c78 ]: HLE: sceIoDevctl("fatms0:", 02415821, 09ffb9c4, 4, 00000000, 0) (z_un_089c6bc4)
-	089c6cac ]: HLE: sceIoDevctl("mscmhc0:", 02025806, 00000000, 0, 09ffb9c8, 4) (z_un_089c6bc4)
 	*/
 	return SCE_KERNEL_ERROR_UNSUP;
 }
@@ -1089,15 +1235,15 @@ u32 sceIoRename(const char *from, const char *to) {
 	if (!pspFileSystem.GetFileInfo(from).exists)
 		return hleDelayResult(ERROR_ERRNO_FILE_NOT_FOUND, "file renamed", 1000);
 
-	if (!pspFileSystem.RenameFile(from, to))
+	int result = pspFileSystem.RenameFile(from, to);
+	if (result < 0)
 		WARN_LOG(HLE, "Could not move %s to %s", from, to);
-	return hleDelayResult(0, "file renamed", 1000);
+	return hleDelayResult(result, "file renamed", 1000);
 }
 
 u32 sceIoChdir(const char *dirname) {
 	DEBUG_LOG(HLE, "sceIoChdir(%s)", dirname);
-	pspFileSystem.ChDir(dirname);
-	return 0;
+	return pspFileSystem.ChDir(dirname);
 }
 
 int sceIoChangeAsyncPriority(int id, int priority)
@@ -1110,7 +1256,7 @@ int sceIoCloseAsync(int id)
 {
 	DEBUG_LOG(HLE, "sceIoCloseAsync(%d)", id);
 	u32 error;
-	FileNode *f = kernelObjects.Get<FileNode>(id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f)
 	{
 		f->closePending = true;
@@ -1128,7 +1274,7 @@ u32 sceIoSetAsyncCallback(int id, u32 clbckId, u32 clbckArg)
 	DEBUG_LOG(HLE, "sceIoSetAsyncCallback(%d, %i, %08x)", id, clbckId, clbckArg);
 
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f)
 	{
 		f->callbackID = clbckId;
@@ -1143,8 +1289,13 @@ u32 sceIoSetAsyncCallback(int id, u32 clbckId, u32 clbckArg)
 
 u32 sceIoOpenAsync(const char *filename, int flags, int mode)
 {
+	// TOOD: Use an internal method so as not to pollute the log?
+	// Intentionally does not work when interrupts disabled.
+	if (!__KernelIsDispatchEnabled())
+		sceKernelResumeDispatchThread(1);
+
 	FileNode *f = __IoOpen(filename, flags, mode);
-	SceUID fd;
+	int fd;
 
 	// We have to return an fd here, which may have been destroyed when we reach Wait if it failed.
 	if (f == NULL)
@@ -1152,16 +1303,26 @@ u32 sceIoOpenAsync(const char *filename, int flags, int mode)
 		ERROR_LOG(HLE, "ERROR_ERRNO_FILE_NOT_FOUND=sceIoOpenAsync(%s, %08x, %08x) - file not found", filename, flags, mode);
 
 		f = new FileNode();
-		fd = kernelObjects.Create(f);
-		f->handle = fd;
+		f->handle = kernelObjects.Create(f);
 		f->fullpath = filename;
 		f->asyncResult = ERROR_ERRNO_FILE_NOT_FOUND;
 		f->closePending = true;
+
+		fd = __IoAllocFd(f);
 	}
 	else
 	{
-		fd = f->GetUID();
-		DEBUG_LOG(HLE, "%x=sceIoOpenAsync(%s, %08x, %08x)", fd, filename, flags, mode);
+		fd = __IoAllocFd(f);
+		if (fd >= 0) {
+			DEBUG_LOG(HLE, "%x=sceIoOpenAsync(%s, %08x, %08x)", fd, filename, flags, mode);
+			f->asyncResult = fd;
+		}
+	}
+
+	if (fd < 0) {
+		ERROR_LOG(HLE, "%08x=sceIoOpenAsync(%s, %08x, %08x): out of fds", fd, filename, flags, mode);
+		kernelObjects.Destroy<FileNode>(f->GetUID());
+		return fd;
 	}
 
 	// TODO: Timing is very inconsistent.  From ms0, 10ms - 20ms depending on filesize/dir depth?  From umd, can take > 1s.
@@ -1174,7 +1335,7 @@ u32 sceIoOpenAsync(const char *filename, int flags, int mode)
 u32 sceIoGetAsyncStat(int id, u32 poll, u32 address)
 {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f)
 	{
 		if (f->pendingAsyncResult) {
@@ -1182,91 +1343,110 @@ u32 sceIoGetAsyncStat(int id, u32 poll, u32 address)
 				DEBUG_LOG(HLE, "%lli = sceIoGetAsyncStat(%i, %i, %08x): not ready", f->asyncResult, id, poll, address);
 				return 1;
 			} else {
+				if (!__KernelIsDispatchEnabled())
+					return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+
 				DEBUG_LOG(HLE, "%lli = sceIoGetAsyncStat(%i, %i, %08x): waiting", f->asyncResult, id, poll, address);
 				__KernelWaitCurThread(WAITTYPE_IO, id, address, 0, false, "io waited");
 			}
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoGetAsyncStat(%i, %i, %08x)", f->asyncResult, id, poll, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
-				kernelObjects.Destroy<FileNode>(id);
+				__IoFreeFd(id, error);
 			}
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoGetAsyncStat(%i, %i, %08x)", id, poll, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 		return 0; //completed
 	}
 	else
 	{
 		ERROR_LOG(HLE, "ERROR - sceIoGetAsyncStat with invalid id %i", id);
-		return -1;
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
 int sceIoWaitAsync(int id, u32 address) {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		if (f->pendingAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsync(%i, %08x): waiting", f->asyncResult, id, address);
 			__KernelWaitCurThread(WAITTYPE_IO, id, address, 0, false, "io waited");
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsync(%i, %08x)", f->asyncResult, id, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
-				kernelObjects.Destroy<FileNode>(id);
+				__IoFreeFd(id, error);
 			}
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoWaitAsync(%i, %08x)", id, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 		return 0; //completed
 	} else {
 		ERROR_LOG(HLE, "ERROR - sceIoWaitAsync waiting for invalid id %i", id);
-		return -1;
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
 int sceIoWaitAsyncCB(int id, u32 address) {
 	// Should process callbacks here
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		hleCheckCurrentCallbacks();
 		if (f->pendingAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsyncCB(%i, %08x): waiting", f->asyncResult, id, address);
 			__KernelWaitCurThread(WAITTYPE_IO, id, address, 0, false, "io waited");
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoWaitAsyncCB(%i, %08x)", f->asyncResult, id, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
-				kernelObjects.Destroy<FileNode>(id);
+				__IoFreeFd(id, error);
 			}
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoWaitAsyncCB(%i, %08x)", id, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 		return 0; //completed
 	} else {
 		ERROR_LOG(HLE, "ERROR - sceIoWaitAsyncCB waiting for invalid id %i", id);
-		return -1;
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
 u32 sceIoPollAsync(int id, u32 address) {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		if (f->pendingAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoPollAsync(%i, %08x): not ready", f->asyncResult, id, address);
 			return 1;
-		} else {
+		} else if (f->hasAsyncResult) {
 			DEBUG_LOG(HLE, "%lli = sceIoPollAsync(%i, %08x)", f->asyncResult, id, address);
 			Memory::Write_U64((u64) f->asyncResult, address);
+			f->hasAsyncResult = false;
 
 			if (f->closePending) {
-				kernelObjects.Destroy<FileNode>(id);
+				__IoFreeFd(id, error);
 			}
 			return 0; //completed
+		} else {
+			WARN_LOG(HLE, "SCE_KERNEL_ERROR_NOASYNC = sceIoPollAsync(%i, %08x)", id, address);
+			return SCE_KERNEL_ERROR_NOASYNC;
 		}
 	} else {
 		ERROR_LOG(HLE, "ERROR - sceIoPollAsync waiting for invalid id %i", id);
-		return -1;  // TODO: correct error code
+		return SCE_KERNEL_ERROR_BADF;
 	}
 }
 
@@ -1275,6 +1455,7 @@ public:
 	const char *GetName() {return name.c_str();}
 	const char *GetTypeName() {return "DirListing";}
 	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_BADF; }
+	static int GetStaticIDType() { return PPSSPP_KERNEL_TMID_DirList; }
 	int GetIDType() const { return PPSSPP_KERNEL_TMID_DirList; }
 
 	virtual void DoState(PointerWrap &p) {
@@ -1354,7 +1535,7 @@ u32 sceIoDclose(int id) {
 int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen) 
 {
 	u32 error;
-	FileNode *f = kernelObjects.Get<FileNode>(id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (error) {
 		ERROR_LOG(HLE, "UNIMPL %08x=sceIoIoctl id: %08x, cmd %08x, bad file", error, id, cmd);
 		return error;
@@ -1369,32 +1550,53 @@ int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 out
 
 	switch (cmd) {
 	// Define decryption key (amctrl.prx DRM)
-	case 0x04100001:  
+	case 0x04100001: {
+		u8 keybuf[16];
+		u8 *key_ptr;
+		u8 pgd_header[0x90];
+		u8 pgd_magic[4] = {0x00, 0x50, 0x47, 0x44};
+
 		if (Memory::IsValidAddress(indataPtr) && inlen == 16) {
-			u8 keybuf[16];
-			u8 pgd_header[0x90];
-			u8 pgd_magic[4] = {0x00, 0x50, 0x47, 0x44};
-			INFO_LOG(HLE, "Decrypting PGD DRM files");
 			memcpy(keybuf, Memory::GetPointer(indataPtr), 16);
-			pspFileSystem.ReadFile(f->handle, pgd_header, 0x90);
-			f->pgdInfo = pgd_open(pgd_header, 2, keybuf);
-			if(f->pgdInfo==NULL){
-				ERROR_LOG(HLE, "Not a valid PGD file. Open as normal file.");
-				f->npdrm = false;
-				pspFileSystem.SeekFile(f->handle, (s32)0, FILEMOVE_BEGIN);
-				if(memcmp(pgd_header, pgd_magic, 4)==0){
-					// File is PGD file, but key mismatch
-					return 0x80510204;
-				}else{
-					// File is decrypted.
-					return 0;
-				}
+			key_ptr = keybuf;
+		}else{
+			key_ptr = NULL;
+		}
+
+		INFO_LOG(HLE, "Decrypting PGD DRM files");
+		pspFileSystem.SeekFile(f->handle, (s32)f->pgd_offset, FILEMOVE_BEGIN);
+		pspFileSystem.ReadFile(f->handle, pgd_header, 0x90);
+		f->pgdInfo = pgd_open(pgd_header, 2, key_ptr);
+		if(f->pgdInfo==NULL){
+			ERROR_LOG(HLE, "Not a valid PGD file. Open as normal file.");
+			f->npdrm = false;
+			pspFileSystem.SeekFile(f->handle, (s32)0, FILEMOVE_BEGIN);
+			if(memcmp(pgd_header, pgd_magic, 4)==0){
+				// File is PGD file, but key mismatch
+				return ERROR_PGD_INVALID_HEADER;
 			}else{
-				// Everthing OK.
-				f->npdrm = true;
+				// File is decrypted.
 				return 0;
 			}
+		}else{
+			// Everthing OK.
+			f->npdrm = true;
+			f->pgdInfo->data_offset += f->pgd_offset;
+			return 0;
 		}
+		break;
+	}
+	// Set PGD offset. Called from sceNpDrmEdataSetupKey
+	case 0x04100002:
+		f->pgd_offset = indataPtr;
+		break;
+
+	// Get PGD data size. Called from sceNpDrmEdataGetDataSize
+	case 0x04100010:
+		if(f->pgdInfo)
+			return f->pgdInfo->data_size;
+		else
+			return (int)f->info.size;
 		break;
 
 	// Get UMD sector size
@@ -1413,7 +1615,7 @@ int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 out
 		}
 		break;
 
-	// Get UMD file start sector .
+	// Get UMD file start sector.
 	case 0x01020006:
 		INFO_LOG(HLE, "sceIoIoCtl: Asked for start sector of file %i", id);
 		if (Memory::IsValidAddress(outdataPtr) && outlen >= 4) {
@@ -1429,9 +1631,25 @@ int __IoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 out
 		}
 		break;
 
+	//Unknown command, always expects return value of 1 according to JPCSP, used by Pangya Fantasy Golf.
+	case 0x1f30003:
+		INFO_LOG(HLE, "sceIoIoCtl: Unknown cmd %08x always returns 1", cmd);
+		if(inlen != 4 || outlen != 1 || Memory::Read_U32(indataPtr) != outlen) {
+			INFO_LOG(HLE, "sceIoIoCtl id: %08x, cmd %08x, indataPtr %08x, inlen %08x, outdataPtr %08x, outlen %08x has invalid parameters", id, cmd, indataPtr, inlen, outdataPtr, outlen);
+			return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
+		}
+		else {
+			return 1;
+		}
+
 	default:
-		Reporting::ReportMessage("sceIoIoctl(%s, %08x, %x, %08x, %x)", f->fullpath.c_str(), indataPtr, inlen, outdataPtr, outlen);
-		ERROR_LOG(HLE, "UNIMPL 0=sceIoIoctl id: %08x, cmd %08x, indataPtr %08x, inlen %08x, outdataPtr %08x, outLen %08x", id,cmd,indataPtr,inlen,outdataPtr,outlen);
+		{
+			char temp[256];
+			// We want the reported message to include the cmd, so it's unique.
+			sprintf(temp, "sceIoIoctl(%%s, %08x, %%08x, %%x, %%08x, %%x)", cmd);
+			Reporting::ReportMessage(temp, f->fullpath.c_str(), indataPtr, inlen, outdataPtr, outlen);
+			ERROR_LOG(HLE, "UNIMPL 0=sceIoIoctl id: %08x, cmd %08x, indataPtr %08x, inlen %08x, outdataPtr %08x, outLen %08x", id,cmd,indataPtr,inlen,outdataPtr,outlen);
+		}
 		break;
 	}
 
@@ -1442,22 +1660,68 @@ u32 sceIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 ou
 {
 	int result = __IoIoctl(id, cmd, indataPtr, inlen, outdataPtr, outlen);
 	// Just a low estimate on timing.
-	return hleDelayResult(0, "io ctrl command", 100);
+	return hleDelayResult(result, "io ctrl command", 100);
 }
 
 u32 sceIoIoctlAsync(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen)
 {
 	u32 error;
-	FileNode *f = kernelObjects.Get < FileNode > (id, error);
+	FileNode *f = __IoGetFd(id, error);
 	if (f) {
 		DEBUG_LOG(HLE, "sceIoIoctlAsync(%08x, %08x, %08x, %08x, %08x, %08x)", id, cmd, indataPtr, inlen, outdataPtr, outlen);
 		f->asyncResult = __IoIoctl(id, cmd, indataPtr, inlen, outdataPtr, outlen);
 		__IoSchedAsync(f, id, 100);
 		return 0;
 	} else {
-		ERROR_LOG(HLE, "UNIMPL %08x=sceIoIoctl id: %08x, cmd %08x, bad file", error, id, cmd);
+		ERROR_LOG(HLE, "UNIMPL %08x=sceIoIoctlAsync id: %08x, cmd %08x, bad file", error, id, cmd);
 		return error;
 	}
+}
+
+u32 sceIoGetFdList(u32 outAddr, int outSize, u32 fdNumAddr) {
+	WARN_LOG(HLE, "sceIoGetFdList(%08x, %i, %08x)", outAddr, outSize, fdNumAddr);
+
+	PSPPointer<SceUID> out;
+	out = outAddr;
+	int count = 0;
+
+	// Always have the first three.
+	for (int i = 0; i < PSP_MIN_FD; ++i) {
+		// TODO: Technically it seems like these are fixed ids > PSP_COUNT_FDS.
+		if (count < outSize && out.IsValid()) {
+			out[count] = i;
+		}
+		++count;
+	}
+
+	for (int i = PSP_MIN_FD; i < PSP_COUNT_FDS; ++i) {
+		if (fds[i] == 0) {
+			continue;
+		}
+		if (count < outSize && out.IsValid()) {
+			out[count] = i;
+		}
+		++count;
+	}
+
+	if (Memory::IsValidAddress(fdNumAddr))
+		Memory::Write_U32(count, fdNumAddr);
+	if (count >= outSize) {
+		return outSize;
+	} else {
+		return count;
+	}
+}
+
+// Presumably lets you hook up stderr to a MsgPipe.
+u32 sceKernelRegisterStderrPipe(u32 msgPipeUID) {
+	ERROR_LOG_REPORT(HLE, "UNIMPL sceKernelRegisterStderrPipe(%08x)", msgPipeUID);
+	return 0;
+}
+
+u32 sceKernelRegisterStdoutPipe(u32 msgPipeUID) {
+	ERROR_LOG_REPORT(HLE, "UNIMPL sceKernelRegisterStdoutPipe(%08x)", msgPipeUID);
+	return 0;
 }
 
 KernelObject *__KernelFileNodeObject() {
@@ -1503,8 +1767,9 @@ const HLEFunction IoFileMgrForUser[] = {
 	{ 0x6d08a871, &WrapU_C<sceIoUnassign>, "sceIoUnassign" },
 	{ 0x42EC03AC, &WrapU_IUI<sceIoWrite>, "sceIoWrite" }, //(int fd, void *data, int size);
 	{ 0x0facab19, &WrapU_IUI<sceIoWriteAsync>, "sceIoWriteAsync" },
-	{ 0x35dbd746, &WrapI_IU<sceIoWaitAsyncCB>, "sceIoWaitAsyncCB" },
-	{ 0xe23eec33, &WrapI_IU<sceIoWaitAsync>, "sceIoWaitAsync" },
+	{ 0x35dbd746, &WrapI_IU<sceIoWaitAsyncCB>, "sceIoWaitAsyncCB", HLE_NOT_DISPATCH_SUSPENDED },
+	{ 0xe23eec33, &WrapI_IU<sceIoWaitAsync>, "sceIoWaitAsync", HLE_NOT_DISPATCH_SUSPENDED },
+	{ 0x5C2BE2CC, &WrapU_UIU<sceIoGetFdList>, "sceIoGetFdList"},
 };
 
 void Register_IoFileMgrForUser() {
@@ -1516,6 +1781,8 @@ const HLEFunction StdioForUser[] = {
 	{ 0x172D316E, &WrapU_V<sceKernelStdin>, "sceKernelStdin" },
 	{ 0xA6BAB2E9, &WrapU_V<sceKernelStdout>, "sceKernelStdout" },
 	{ 0xF78BA90A, &WrapU_V<sceKernelStderr>, "sceKernelStderr" }, 
+	{ 0x432D8F5C, &WrapU_U<sceKernelRegisterStdoutPipe>, "sceKernelRegisterStdoutPipe" },
+	{ 0x6F797E03, &WrapU_U<sceKernelRegisterStderrPipe>, "sceKernelRegisterStderrPipe" },
 };
 
 void Register_StdioForUser() {

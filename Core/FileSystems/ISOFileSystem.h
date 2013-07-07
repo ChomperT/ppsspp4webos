@@ -18,7 +18,7 @@
 #pragma once
 
 #include <map>
-#include <string>
+#include <list>
 
 #include "FileSystem.h"
 
@@ -28,7 +28,7 @@
 class ISOFileSystem : public IFileSystem
 {
 public:
-	ISOFileSystem(IHandleAllocator *_hAlloc, BlockDevice *_blockDevice);
+	ISOFileSystem(IHandleAllocator *_hAlloc, BlockDevice *_blockDevice, std::string _restrictPath = "");
 	~ISOFileSystem();
 	void DoState(PointerWrap &p);
 	std::vector<PSPFileInfo> GetDirListing(std::string path);
@@ -43,7 +43,7 @@ public:
 	bool GetHostPath(const std::string &inpath, std::string &outpath) {return false;}
 	virtual bool MkDir(const std::string &dirname) {return false;}
 	virtual bool RmDir(const std::string &dirname) {return false;}
-	virtual bool RenameFile(const std::string &from, const std::string &to) {return false;}
+	virtual int  RenameFile(const std::string &from, const std::string &to) {return -1;}
 	virtual bool RemoveFile(const std::string &filename) {return false;}
 
 private:
@@ -52,7 +52,7 @@ private:
 		TreeEntry(){}
 		~TreeEntry()
 		{
-			for (unsigned int i=0; i<children.size(); i++)
+			for (size_t i = 0; i < children.size(); ++i)
 				delete children[i];
 			children.clear();
 		}
@@ -86,7 +86,10 @@ private:
 
 	TreeEntry entireISO;
 
-	void ReadDirectory(u32 startsector, u32 dirsize, TreeEntry *root);
+	// Don't use this in the emu, not savestated.
+	std::vector<std::string> restrictTree;
+
+	void ReadDirectory(u32 startsector, u32 dirsize, TreeEntry *root, size_t level);
 	TreeEntry *GetFromPath(std::string path, bool catchError=true);
 	std::string EntryFullPath(TreeEntry *e);
 };

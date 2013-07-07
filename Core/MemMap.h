@@ -23,6 +23,8 @@
 #include "Common.h"
 #include "CommonTypes.h"
 
+#include "HDRemaster.h"
+
 // Enable memory checks in the Debug/DebugFast builds, but NOT in release
 #if defined(_DEBUG) || defined(DEBUGFAST)
 #define ENABLE_MEM_CHECK
@@ -55,21 +57,6 @@ typedef void (*readFn16)(u16&, const u32);
 typedef void (*readFn32)(u32&, const u32);
 typedef void (*readFn64)(u64&, const u32);
 
-inline u32 PSP_GetScratchpadMemoryBase() { return 0x00010000;}
-inline u32 PSP_GetScratchpadMemoryEnd() { return 0x00014000;}
-
-inline u32 PSP_GetKernelMemoryBase() { return 0x08000000;}
-inline u32 PSP_GetKernelMemoryEnd()  { return 0x08400000;} 
-// "Volatile" RAM is between 0x08400000 and 0x08800000, can be requested by the
-// game through sceKernelVolatileMemTryLock.
-
-inline u32 PSP_GetUserMemoryBase() { return 0x08800000;}
-inline u32 PSP_GetUserMemoryEnd()  { return 0x0A000000;}
-
-inline u32 PSP_GetDefaultLoadAddress() { return 0x08804000;}
-//inline u32 PSP_GetDefaultLoadAddress() { return 0x0898dab0;}
-inline u32 PSP_GetVidMemBase() { return 0x04000000;}
-
 namespace Memory
 {
 // Base is a pointer to the base of the memory map. Yes, some MMU tricks
@@ -96,17 +83,16 @@ extern u8 *m_pUncachedRAM;
 extern u8 *m_pPhysicalVRAM;
 extern u8 *m_pUncachedVRAM;
 
-// TODO: Later PSP models got more RAM.
+extern u32 g_MemorySize; // Replaces RAM_SIZE
+extern u32 g_MemoryMask; // Replaces RAM_MASK
+
 enum
 {
-	RAM_SIZE		= 0x2000000,  // 32 MB - although only the upper 24 are available for the user.
-	RAM_MASK		= RAM_SIZE - 1,
+	VRAM_SIZE       = 0x200000,
+	VRAM_MASK       = VRAM_SIZE - 1,
 
-	VRAM_SIZE   = 0x200000,
-	VRAM_MASK	  = VRAM_SIZE - 1,
-
-	SCRATCHPAD_SIZE	= 0x4000,
-  SCRATCHPAD_MASK = SCRATCHPAD_SIZE - 1,
+	SCRATCHPAD_SIZE = 0x4000,
+	SCRATCHPAD_MASK = SCRATCHPAD_SIZE - 1,
 
 #if defined(_M_IX86) || defined(_M_ARM32)
   // This wraparound should work for PSP too.
@@ -118,14 +104,8 @@ enum
 void Init();
 void Shutdown();
 void DoState(PointerWrap &p);
-
 void Clear();
-bool AreMemoryBreakpointsActivated();
 
-inline u8* GetMainRAMPtr() {return m_pRAM;}
-
-// used by interpreter to read instructions, uses iCache
-u32 Read_Opcode(const u32 _Address);
 // used by JIT to read instructions
 u32 Read_Opcode_JIT(const u32 _Address);
 // used by JIT. uses iCacheJIT. Reads in the "Locked cache" mode
@@ -136,11 +116,6 @@ u32 Read_Instruction(const u32 _Address);
 
 
 // For use by emulator
-
-// Read and write functions
-#define NUMHWMEMFUN 64
-#define HWSHIFT 10
-#define HW_MASK 0x3FF
 
 u8  Read_U8(const u32 _Address);
 u16 Read_U16(const u32 _Address);
@@ -212,7 +187,6 @@ inline void WriteUnchecked_U8(u8 data, u32 address) {
 
 #endif
 
-
 inline float Read_Float(u32 address) 
 {
   u32 ifloat = Read_U32(address);
@@ -225,19 +199,10 @@ inline float Read_Float(u32 address)
 u32 Read_U8_ZX(const u32 address);
 u32 Read_U16_ZX(const u32 address);
 
-// used by JIT (Jit64::lXz)
-u32 EFB_Read(const u32 addr);
-
 void Write_U8(const u8 data, const u32 address);
 void Write_U16(const u16 data, const u32 address);
 void Write_U32(const u32 data, const u32 address);
 void Write_U64(const u64 data, const u32 address);
-
-void Write_U16_Swap(const u16 data, const u32 address);
-void Write_U32_Swap(const u32 data, const u32 address);
-void Write_U64_Swap(const u64 data, const u32 address);
-
-void WriteHW_U32(const u32 data, const u32 address);
 
 inline void Write_Float(float f, u32 address)
 {
@@ -263,19 +228,170 @@ template<class T>
 void ReadStruct(u32 address, T *ptr)
 {
 	size_t sz = sizeof(*ptr);
-  memcpy(ptr, GetPointer(address), sz);
+	memcpy(ptr, GetPointer(address), sz);
 }
 
 template<class T>
 void WriteStruct(u32 address, T *ptr)
 {
 	size_t sz = sizeof(*ptr);
-  memcpy(GetPointer(address), ptr, sz);
+	memcpy(GetPointer(address), ptr, sz);
+}
+
+// Expect this to be some form of auto class on big endian.
+template<class T>
+T *GetStruct(u32 address)
+{
+	return (T *)GetPointer(address);
 }
 
 const char *GetAddressName(u32 address);
 
 };
+
+template <typename T>
+struct PSPPointer
+{
+	u32 ptr;
+
+	inline T &operator*() const
+	{
+		return *(T *)(Memory::base + ptr);
+	}
+
+	inline T &operator[](int i) const
+	{
+		return *((T *)(Memory::base + ptr) + i);
+	}
+
+	inline T *operator->() const
+	{
+		return (T *)(Memory::base + ptr);
+	}
+
+	inline PSPPointer<T> operator+(int i) const
+	{
+		PSPPointer other;
+		other.ptr = ptr + i * sizeof(T);
+		return other;
+	}
+
+	inline PSPPointer<T> &operator=(u32 p)
+	{
+		ptr = p;
+		return *this;
+	}
+
+	inline PSPPointer<T> &operator+=(int i)
+	{
+		ptr = ptr + i * sizeof(T);
+		return *this;
+	}
+
+	inline PSPPointer<T> operator-(int i) const
+	{
+		PSPPointer other;
+		other.ptr = ptr - i * sizeof(T);
+		return other;
+	}
+
+	inline PSPPointer<T> &operator-=(int i)
+	{
+		ptr = ptr - i * sizeof(T);
+		return *this;
+	}
+
+	inline PSPPointer<T> &operator++()
+	{
+		ptr += sizeof(T);
+		return *this;
+	}
+
+	inline PSPPointer<T> operator++(int i)
+	{
+		PSPPointer<T> other;
+		other.ptr = ptr;
+		ptr += sizeof(T);
+		return other;
+	}
+
+	inline PSPPointer<T> &operator--()
+	{
+		ptr -= sizeof(T);
+		return *this;
+	}
+
+	inline PSPPointer<T> operator--(int i)
+	{
+		PSPPointer<T> other;
+		other.ptr = ptr;
+		ptr -= sizeof(T);
+		return other;
+	}
+
+	inline operator T*()
+	{
+		return (T *)(Memory::base + ptr);
+	}
+
+	bool IsValid() const
+	{
+		return Memory::IsValidAddress(ptr);
+	}
+};
+
+
+inline u32 PSP_GetScratchpadMemoryBase() { return 0x00010000;}
+inline u32 PSP_GetScratchpadMemoryEnd() { return 0x00014000;}
+
+inline u32 PSP_GetKernelMemoryBase() { return 0x08000000;}
+inline u32 PSP_GetUserMemoryEnd()  { return PSP_GetKernelMemoryBase() + Memory::g_MemorySize;}
+inline u32 PSP_GetKernelMemoryEnd()  { return 0x08400000;} 
+// "Volatile" RAM is between 0x08400000 and 0x08800000, can be requested by the
+// game through sceKernelVolatileMemTryLock.
+
+inline u32 PSP_GetUserMemoryBase() { return 0x08800000;}
+
+inline u32 PSP_GetDefaultLoadAddress() { return 0x08804000;}
+//inline u32 PSP_GetDefaultLoadAddress() { return 0x0898dab0;}
+inline u32 PSP_GetVidMemBase() { return 0x04000000;}
+inline u32 PSP_GetVidMemEnd() { return 0x04800000;}
+
+template <typename T>
+inline bool operator==(const PSPPointer<T> &lhs, const PSPPointer<T> &rhs)
+{
+	return lhs.ptr == rhs.ptr;
+}
+
+template <typename T>
+inline bool operator!=(const PSPPointer<T> &lhs, const PSPPointer<T> &rhs)
+{
+	return lhs.ptr != rhs.ptr;
+}
+
+template <typename T>
+inline bool operator<(const PSPPointer<T> &lhs, const PSPPointer<T> &rhs)
+{
+	return lhs.ptr < rhs.ptr;
+}
+
+template <typename T>
+inline bool operator>(const PSPPointer<T> &lhs, const PSPPointer<T> &rhs)
+{
+	return lhs.ptr > rhs.ptr;
+}
+
+template <typename T>
+inline bool operator<=(const PSPPointer<T> &lhs, const PSPPointer<T> &rhs)
+{
+	return lhs.ptr <= rhs.ptr;
+}
+
+template <typename T>
+inline bool operator>=(const PSPPointer<T> &lhs, const PSPPointer<T> &rhs)
+{
+	return lhs.ptr >= rhs.ptr;
+}
 
 #endif
 

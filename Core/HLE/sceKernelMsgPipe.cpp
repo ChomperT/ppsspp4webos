@@ -55,6 +55,7 @@ struct MsgPipe : public KernelObject
 	const char *GetName() {return nmp.name;}
 	const char *GetTypeName() {return "MsgPipe";}
 	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_UNKNOWN_MPPID; }
+	static int GetStaticIDType() { return SCE_KERNEL_TMID_Mpipe; }
 	int GetIDType() const { return SCE_KERNEL_TMID_Mpipe; }
 
 	MsgPipe() : buffer(NULL) {}
@@ -74,9 +75,11 @@ struct MsgPipe : public KernelObject
 				if (__KernelGetThreadPrio(id) >= __KernelGetThreadPrio((*it).id))
 				{
 					list.insert(it, thread);
-					break;
+					return;
 				}
 			}
+
+			list.push_back(thread);
 		}
 		else
 		{
@@ -396,7 +399,7 @@ void sceKernelTrySendMsgPipe()
 		return;
 	}
 
-	DEBUG_LOG(HLE, "sceKernelTrySendMsgPipeCB(id=%i, addr=%08x, size=%i, mode=%i, result=%08x)", uid, sendBufAddr, sendSize, waitMode, resultAddr);
+	DEBUG_LOG(HLE, "sceKernelTrySendMsgPipe(id=%i, addr=%08x, size=%i, mode=%i, result=%08x)", uid, sendBufAddr, sendSize, waitMode, resultAddr);
 	__KernelSendMsgPipe(m, sendBufAddr, sendSize, waitMode, resultAddr, 0, false, true);
 }
 

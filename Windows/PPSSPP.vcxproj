@@ -67,13 +67,13 @@
     <_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(Configuration)\</IntDir>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</LinkIncremental>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">..\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\</IntDir>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">..\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(Configuration)\</IntDir>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</LinkIncremental>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">..\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\</IntDir>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
     <CodeAnalysisRuleSet Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">AllRules.ruleset</CodeAnalysisRuleSet>
@@ -93,11 +93,17 @@
     <OutDir>..\</OutDir>
     <TargetName>PPSSPPDebug</TargetName>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <TargetName>PPSSPPDebug64</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetName>PPSSPPWindows64</TargetName>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
-      <MinimalRebuild>true</MinimalRebuild>
+      <MinimalRebuild>false</MinimalRebuild>
       <ExceptionHandling>Sync</ExceptionHandling>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
@@ -105,9 +111,13 @@
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;../ext/zlib</AdditionalIncludeDirectories>
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;glu32.lib;comctl32.lib;dsound.lib;xinput.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;..\ffmpeg\Windows\x86\lib\avcodec.lib;..\ffmpeg\Windows\x86\lib\avdevice.lib;..\ffmpeg\Windows\x86\lib\avformat.lib;..\ffmpeg\Windows\x86\lib\avutil.lib;..\ffmpeg\Windows\x86\lib\swresample.lib;..\ffmpeg\Windows\x86\lib\swscale.lib;glu32.lib;comctl32.lib;dsound.lib;xinput.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <TargetMachine>MachineX86</TargetMachine>
@@ -124,8 +134,8 @@
     </Midl>
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <MinimalRebuild>true</MinimalRebuild>
+      <MinimalRebuild>false</MinimalRebuild>
+      <PreprocessorDefinitions>WIN32;_DEBUG;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
       <ExceptionHandling>Sync</ExceptionHandling>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
@@ -133,9 +143,14 @@
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;../ext/zlib</AdditionalIncludeDirectories>
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <OmitFramePointers>false</OmitFramePointers>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;glu32.lib;comctl32.lib;dsound.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;dsound.lib;glu32.lib;..\ffmpeg\Windows\x86_64\lib\avcodec.lib;..\ffmpeg\Windows\x86_64\lib\avdevice.lib;..\ffmpeg\Windows\x86_64\lib\avformat.lib;..\ffmpeg\Windows\x86_64\lib\avutil.lib;..\ffmpeg\Windows\x86_64\lib\swresample.lib;..\ffmpeg\Windows\x86_64\lib\swscale.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(OutDir)$(ProjectName).pdb</ProgramDatabaseFile>
       <SubSystem>Windows</SubSystem>
@@ -143,6 +158,8 @@
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <LargeAddressAware>true</LargeAddressAware>
       <BaseAddress>0x00400000</BaseAddress>
+      <FixedBaseAddress>true</FixedBaseAddress>
+      <ShowProgress>NotSet</ShowProgress>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -150,7 +167,6 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <OmitFramePointers>true</OmitFramePointers>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>Sync</ExceptionHandling>
@@ -164,9 +180,11 @@
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;../ext/zlib</AdditionalIncludeDirectories>
       <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;dsound.lib;glu32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;..\ffmpeg\Windows\x86\lib\avcodec.lib;..\ffmpeg\Windows\x86\lib\avdevice.lib;..\ffmpeg\Windows\x86\lib\avformat.lib;..\ffmpeg\Windows\x86\lib\avutil.lib;..\ffmpeg\Windows\x86\lib\swresample.lib;..\ffmpeg\Windows\x86\lib\swscale.lib;dsound.lib;glu32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -175,7 +193,6 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <TargetMachine>MachineX86</TargetMachine>
       <AdditionalOptions>/ignore:4049 %(AdditionalOptions)</AdditionalOptions>
-      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
       <BaseAddress>0x00400000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
@@ -191,29 +208,31 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <OmitFramePointers>true</OmitFramePointers>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <OmitFramePointers>false</OmitFramePointers>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>Sync</ExceptionHandling>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
-      <EnableEnhancedInstructionSet>StreamingSIMDExtensions</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;../ext/zlib</AdditionalIncludeDirectories>
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;dsound.lib;glu32.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>XInput.lib;Winmm.lib;Ws2_32.lib;opengl32.lib;dsound.lib;glu32.lib;..\ffmpeg\Windows\x86_64\lib\avcodec.lib;..\ffmpeg\Windows\x86_64\lib\avdevice.lib;..\ffmpeg\Windows\x86_64\lib\avformat.lib;..\ffmpeg\Windows\x86_64\lib\avutil.lib;..\ffmpeg\Windows\x86_64\lib\swresample.lib;..\ffmpeg\Windows\x86_64\lib\swscale.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <TargetMachine>MachineX64</TargetMachine>
-      <BaseAddress>0x400000</BaseAddress>
+      <BaseAddress>0x00400000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
     </Link>
@@ -225,42 +244,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="..\android\jni\EmuScreen.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="..\android\jni\GamepadEmu.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="..\android\jni\MenuScreens.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="..\android\jni\NativeApp.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="..\android\jni\TestRunner.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="..\android\jni\UIShader.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
+    <ClCompile Include="..\android\jni\TestRunner.cpp" />
     <ClCompile Include="..\native\ext\glew\glew.c">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -275,12 +259,17 @@
       <ForcedIncludeFiles Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
       </ForcedIncludeFiles>
     </ClCompile>
+    <ClCompile Include="ControlMapping.cpp" />
+    <ClCompile Include="Debugger\BreakpointWindow.cpp" />
     <ClCompile Include="Debugger\CtrlDisAsmView.cpp" />
     <ClCompile Include="Debugger\CtrlMemView.cpp" />
     <ClCompile Include="Debugger\CtrlRegisterList.cpp" />
+    <ClCompile Include="Debugger\DebuggerShared.cpp" />
     <ClCompile Include="Debugger\Debugger_Disasm.cpp" />
+    <ClCompile Include="Debugger\Debugger_Lists.cpp" />
     <ClCompile Include="Debugger\Debugger_MemoryDlg.cpp" />
     <ClCompile Include="Debugger\Debugger_VFPUDlg.cpp" />
+    <ClCompile Include="DinputDevice.cpp" />
     <ClCompile Include="EmuThread.cpp" />
     <ClCompile Include="InputDevice.cpp" />
     <ClCompile Include="KeyboardDevice.cpp" />
@@ -310,17 +299,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\android\jni\ARMEmitterTest.h" />
-    <ClInclude Include="..\android\jni\EmuScreen.h" />
-    <ClInclude Include="..\android\jni\GamepadEmu.h" />
-    <ClInclude Include="..\android\jni\MenuScreens.h" />
     <ClInclude Include="..\android\jni\TestRunner.h" />
-    <ClInclude Include="..\android\jni\UIShader.h" />
+    <ClInclude Include="ControlMapping.h" />
+    <ClInclude Include="Debugger\BreakpointWindow.h" />
     <ClInclude Include="Debugger\CtrlDisAsmView.h" />
     <ClInclude Include="Debugger\CtrlMemView.h" />
     <ClInclude Include="Debugger\CtrlRegisterList.h" />
+    <ClInclude Include="Debugger\DebuggerShared.h" />
     <ClInclude Include="Debugger\Debugger_Disasm.h" />
+    <ClInclude Include="Debugger\Debugger_Lists.h" />
     <ClInclude Include="Debugger\Debugger_MemoryDlg.h" />
     <ClInclude Include="Debugger\Debugger_VFPUDlg.h" />
+    <ClInclude Include="DinputDevice.h" />
     <ClInclude Include="EmuThread.h" />
     <ClInclude Include="InputDevice.h" />
     <ClInclude Include="KeyboardDevice.h" />
@@ -349,6 +339,7 @@
     <None Include="git-version-gen.cmd" />
     <None Include="ppsspp.ico" />
     <None Include="icon1.ico" />
+    <None Include="pspmode.png" />
     <None Include="rt_manif.bin" />
     <None Include="stop1.ico" />
   </ItemGroup>
@@ -373,6 +364,9 @@
     </ProjectReference>
     <ProjectReference Include="..\ext\zlib\zlib.vcxproj">
       <Project>{f761046e-6c38-4428-a5f1-38391a37bb34}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\UI\UI.vcxproj">
+      <Project>{004b8d11-2be3-4bd9-ab40-2be04cf2096f}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

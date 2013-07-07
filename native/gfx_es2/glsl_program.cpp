@@ -189,9 +189,6 @@ bool glsl_recompile(GLSLProgram *program) {
 	program->u_fog = glGetUniformLocation(program->program_, "u_fog");
 	program->u_sundir = glGetUniformLocation(program->program_, "u_sundir");
 	program->u_camerapos = glGetUniformLocation(program->program_, "u_camerapos");
-#ifdef WEBOS
-	program->u_rotate = glGetUniformLocation(program->program_, "u_rotate");
-#endif
 
 	//ILOG("Shader compilation success: %s %s",
 	//		 program->vshader_filename,
@@ -235,17 +232,9 @@ void glsl_destroy(GLSLProgram *program) {
 	delete program;
 }
 
-#ifdef WEBOS
-#include "../../Core/Config.h"
-void glsl_bind(const GLSLProgram *program) {
-	glUseProgram(program->program_);
-	glUniform1i(program->u_rotate, g_Config.bLandScape ? 1 : 0);
-}
-#else
 void glsl_bind(const GLSLProgram *program) {
 	glUseProgram(program->program_);
 }
-#endif
 
 void glsl_unbind() {
 	glUseProgram(0);

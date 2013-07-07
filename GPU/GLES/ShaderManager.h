@@ -28,12 +28,15 @@ class Shader;
 class LinkedShader
 {
 public:
-	LinkedShader(Shader *vs, Shader *fs);
+	LinkedShader(Shader *vs, Shader *fs, bool useHWTransform);
 	~LinkedShader();
 
 	void use();
 	void stop();
 	void updateUniforms();
+
+	// Set to false if the VS failed, happens on Mali-400 a lot for complex shaders.
+	bool useHWTransform_;
 
 	uint32_t program;
 	u32 dirtyUniforms;
@@ -54,7 +57,12 @@ public:
 	int u_view;
 	int u_texmtx;
 	int u_world;
+#ifdef USE_BONE_ARRAY
+	int u_bone;  // array, size is numBones
+#else
 	int u_bone[8];
+#endif
+	int numBones;
 	
 	// Fragment processing inputs
 	int u_alphacolorref;
@@ -74,6 +82,8 @@ public:
 	int u_lightpos[4];
 	int u_lightdir[4];
 	int u_lightatt[4];  // attenuation
+	int u_lightangle[4]; // spotlight cone angle (cosine)
+	int u_lightspotCoef[4]; // spotlight dropoff
 	int u_lightdiffuse[4];  // each light consist of vec4[3]
 	int u_lightspecular[4];  // attenuation
 	int u_lightambient[4];  // attenuation
@@ -122,12 +132,18 @@ enum
 
 class Shader {
 public:
-	Shader(const char *code, uint32_t shaderType);
+	Shader(const char *code, uint32_t shaderType, bool useHWTransform);
+	~Shader();
 	uint32_t shader;
 	const std::string &source() const { return source_; }
 
+	bool Failed() const { return failed_; }
+	bool UseHWTransform() const { return useHWTransform_; }
+
 private:
 	std::string source_;
+	bool failed_;
+	bool useHWTransform_;
 };
 
 
@@ -141,6 +157,7 @@ public:
 	LinkedShader *ApplyShader(int prim);
 	void DirtyShader();
 	void DirtyUniform(u32 what);
+	void EndFrame();  // disables vertex arrays
 
 	int NumVertexShaders() const { return (int)vsCache.size(); }
 	int NumFragmentShaders() const { return (int)fsCache.size(); }
@@ -149,7 +166,15 @@ public:
 private:
 	void Clear();
 
-	typedef std::map<std::pair<Shader *, Shader *>, LinkedShader *> LinkedShaderCache;
+	struct LinkedShaderCacheEntry {
+		LinkedShaderCacheEntry(Shader *vs_, Shader *fs_, LinkedShader *ls_)
+			: vs(vs_), fs(fs_), ls(ls_) { }
+
+		Shader *vs;
+		Shader *fs;
+		LinkedShader *ls;
+	};
+	typedef std::vector<LinkedShaderCacheEntry> LinkedShaderCache;
 
 	LinkedShaderCache linkedShaderCache;
 	FragmentShaderID lastFSID;

@@ -53,7 +53,7 @@ namespace MIPSComp
 
 		JitSafeMem safe(this, rs, offset);
 		OpArg src;
-		if (safe.PrepareRead(src, 4))
+		if (safe.PrepareRead(src, bits / 8))
 			(this->*mov)(32, bits, gpr.RX(rt), src);
 		if (safe.PrepareSlowRead(safeFunc))
 			(this->*mov)(32, bits, gpr.RX(rt), R(EAX));
@@ -83,7 +83,7 @@ namespace MIPSComp
 
 		JitSafeMem safe(this, rs, offset);
 		OpArg dest;
-		if (safe.PrepareWrite(dest, 4))
+		if (safe.PrepareWrite(dest, bits / 8))
 		{
 			if (needSwap)
 			{
@@ -100,6 +100,155 @@ namespace MIPSComp
 		if (needSwap)
 			gpr.UnlockAllX();
 		gpr.UnlockAll();
+	}
+
+	void Jit::CompITypeMemUnpairedLR(u32 op, bool isStore)
+	{
+		CONDITIONAL_DISABLE;
+		int o = op>>26;
+		int offset = (signed short)(op&0xFFFF);
+		int rt = _RT;
+		int rs = _RS;
+
+		X64Reg shiftReg = ECX;
+		gpr.FlushLockX(ECX, EDX);
+#ifdef _M_X64
+		// On x64, we need ECX for CL, but it's also the first arg and gets lost.  Annoying.
+		gpr.FlushLockX(R9);
+		shiftReg = R9;
+#endif
+
+		gpr.Lock(rt);
+		gpr.BindToRegister(rt, true, !isStore);
+
+		// Grab the offset from alignment for shifting (<< 3 for bytes -> bits.)
+		MOV(32, R(shiftReg), gpr.R(rs));
+		ADD(32, R(shiftReg), Imm32(offset));
+		AND(32, R(shiftReg), Imm32(3));
+		SHL(32, R(shiftReg), Imm8(3));
+
+		{
+			JitSafeMem safe(this, rs, offset, ~3);
+			safe.SetFar();
+			OpArg src;
+			if (safe.PrepareRead(src, 4))
+			{
+				if (!src.IsSimpleReg(EAX))
+					MOV(32, R(EAX), src);
+
+				CompITypeMemUnpairedLRInner(op, shiftReg);
+			}
+			if (safe.PrepareSlowRead((void *) &Memory::Read_U32))
+				CompITypeMemUnpairedLRInner(op, shiftReg);
+			safe.Finish();
+		}
+
+		// For store ops, write EDX back to memory.
+		if (isStore)
+		{
+			JitSafeMem safe(this, rs, offset, ~3);
+			OpArg dest;
+			if (safe.PrepareWrite(dest, 4))
+				MOV(32, dest, R(EDX));
+			if (safe.PrepareSlowWrite())
+				safe.DoSlowWrite((void *) &Memory::Write_U32, R(EDX));
+			safe.Finish();
+		}
+
+		gpr.UnlockAll();
+		gpr.UnlockAllX();
+	}
+
+	void Jit::CompITypeMemUnpairedLRInner(u32 op, X64Reg shiftReg)
+	{
+		CONDITIONAL_DISABLE;
+		int o = op>>26;
+		int rt = _RT;
+
+		// Make sure we have the shift for the target in ECX.
+		if (shiftReg != ECX)
+			MOV(32, R(ECX), R(shiftReg));
+
+		// Now use that shift (left on target, right on source.)
+		switch (o)
+		{
+		case 34: //lwl
+			MOV(32, R(EDX), Imm32(0x00ffffff));
+			SHR(32, R(EDX), R(CL));
+			AND(32, gpr.R(rt), R(EDX));
+			break;
+
+		case 38: //lwr
+			SHR(32, R(EAX), R(CL));
+			break;
+
+		case 42: //swl
+			MOV(32, R(EDX), Imm32(0xffffff00));
+			SHL(32, R(EDX), R(CL));
+			AND(32, R(EAX), R(EDX));
+			break;
+
+		case 46: //swr
+			MOV(32, R(EDX), gpr.R(rt));
+			SHL(32, R(EDX), R(CL));
+			// EDX is already the target value to write, but may be overwritten below.  Save it.
+			PUSH(EDX);
+			break;
+
+		default:
+			_dbg_assert_msg_(JIT, 0, "Unsupported left/right load/store instruction.");
+		}
+
+		// Flip ECX around from 3 bytes / 24 bits.
+		if (shiftReg == ECX)
+		{
+			MOV(32, R(EDX), Imm32(24));
+			SUB(32, R(EDX), R(ECX));
+			MOV(32, R(ECX), R(EDX));
+		}
+		else
+		{
+			MOV(32, R(ECX), Imm32(24));
+			SUB(32, R(ECX), R(shiftReg));
+		}
+
+		// Use the flipped shift (left on source, right on target) and write target.
+		switch (o)
+		{
+		case 34: //lwl
+			SHL(32, R(EAX), R(CL));
+
+			OR(32, gpr.R(rt), R(EAX));
+			break;
+
+		case 38: //lwr
+			MOV(32, R(EDX), Imm32(0xffffff00));
+			SHL(32, R(EDX), R(CL));
+			AND(32, gpr.R(rt), R(EDX));
+
+			OR(32, gpr.R(rt), R(EAX));
+			break;
+
+		case 42: //swl
+			MOV(32, R(EDX), gpr.R(rt));
+			SHR(32, R(EDX), R(CL));
+
+			OR(32, R(EDX), R(EAX));
+			break;
+
+		case 46: //swr
+			MOV(32, R(EDX), Imm32(0x00ffffff));
+			SHR(32, R(EDX), R(CL));
+			AND(32, R(EAX), R(EDX));
+
+			// This is the target value we saved earlier.
+			POP(EDX);
+			OR(32, R(EDX), R(EAX));
+			break;
+
+		default:
+			_dbg_assert_msg_(JIT, 0, "Unsupported left/right load/store instruction.");
+		}
 	}
 
 	void Jit::Comp_ITypeMem(u32 op)
@@ -160,7 +309,7 @@ namespace MIPSComp
 					CompITypeMemRead(nextOp, 32, &XEmitter::MOVZX, (void *) &Memory::Read_U32);
 				}
 				else
-					Comp_Generic(op);
+					CompITypeMemUnpairedLR(op, false);
 			}
 			break;
 
@@ -176,7 +325,7 @@ namespace MIPSComp
 					CompITypeMemRead(op, 32, &XEmitter::MOVZX, (void *) &Memory::Read_U32);
 				}
 				else
-					Comp_Generic(op);
+					CompITypeMemUnpairedLR(op, false);
 			}
 			break;
 
@@ -192,7 +341,7 @@ namespace MIPSComp
 					CompITypeMemWrite(nextOp, 32, (void *) &Memory::Write_U32);
 				}
 				else
-					Comp_Generic(op);
+					CompITypeMemUnpairedLR(op, true);
 			}
 			break;
 
@@ -208,7 +357,7 @@ namespace MIPSComp
 					CompITypeMemWrite(op, 32, (void *) &Memory::Write_U32);
 				}
 				else
-					Comp_Generic(op);
+					CompITypeMemUnpairedLR(op, true);
 			}
 			break;
 

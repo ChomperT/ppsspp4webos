@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef USING_QT_UI
+#include <QFile>
+#endif
+
 #include "base/logging.h"
 #include "zlib.h"
 #include "image/zim_load.h"
@@ -131,15 +135,23 @@ int LoadZIMPtr(uint8_t *zim, int datasize, int *width, int *height, int *flags, 
 }
 
 int LoadZIM(const char *filename, int *width, int *height, int *format, uint8_t **image) {
+#ifdef USING_QT_UI
+	QFile asset(QString(":/assets/") + filename);
+	if (!asset.open(QIODevice::ReadOnly))
+		return 0;
+	int retval = LoadZIMPtr((uint8_t*)asset.readAll().data(), asset.size(), width, height, format, image);
+	asset.close();
+#else
 	size_t size;
 	uint8_t *buffer = VFSReadFile(filename, &size);
 	if (!buffer) {
 		return 0;
 	}
-	int retval = LoadZIMPtr(buffer, size, width, height, format, image);
+	int retval = LoadZIMPtr(buffer, (int)size, width, height, format, image);
 	if (!retval) {
 		ELOG("Not a valid ZIM file: %s", filename);
 	}
 	delete [] buffer;
+#endif
 	return retval;
 }

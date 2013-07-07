@@ -15,20 +15,23 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "../Common/StdMutex.h"
-#include "../Common/FileUtil.h"
 #include <vector>
 
-#include "SaveState.h"
-#include "Core.h"
-#include "CoreTiming.h"
-#include "HLE/HLE.h"
-#include "HLE/sceKernel.h"
+#include "Common/StdMutex.h"
+#include "Common/FileUtil.h"
+
+#include "Core/SaveState.h"
+#include "Core/Core.h"
+#include "Core/CoreTiming.h"
+#include "Core/HLE/HLE.h"
+#include "Core/HLE/sceKernel.h"
 #include "HW/MemoryStick.h"
-#include "MemMap.h"
-#include "MIPS/MIPS.h"
-#include "MIPS/JitCommon/JitCommon.h"
-#include "System.h"
+#include "Core/MemMap.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
+#include "Core/System.h"
+#include "UI/OnScreenDisplay.h"
+#include "i18n/i18n.h"
 
 namespace SaveState
 {
@@ -111,6 +114,11 @@ namespace SaveState
 		Enqueue(Operation(SAVESTATE_SAVE, filename, callback, cbUserData));
 	}
 
+	void Verify(Callback callback, void *cbUserData)
+	{
+		Enqueue(Operation(SAVESTATE_VERIFY, std::string(""), callback, cbUserData));
+	}
+
 
 	// Slot utilities
 
@@ -148,9 +156,10 @@ namespace SaveState
 			(*callback)(false, cbUserData);
 	}
 
-	void HasSaveInSlot(int slot)
+	bool HasSaveInSlot(int slot)
 	{
 		std::string fn = GenerateSaveSlotFilename(slot);
+		return File::Exists(fn);
 	}
 
 	bool operator < (const tm &t1, const tm &t2) {
@@ -186,11 +195,6 @@ namespace SaveState
 	}
 
 
-	void Verify(Callback callback, void *cbUserData)
-	{
-		Enqueue(Operation(SAVESTATE_VERIFY, std::string(""), callback, cbUserData));
-	}
-
 	std::vector<Operation> Flush()
 	{
 		std::lock_guard<std::recursive_mutex> guard(mutex);
@@ -215,6 +219,9 @@ namespace SaveState
 		{
 			Operation &op = operations[i];
 			bool result;
+			std::string reason;
+
+			I18NCategory *s = GetI18NCategory("Screen"); 
 
 			switch (op.type)
 			{
@@ -222,7 +229,12 @@ namespace SaveState
 				if (MIPSComp::jit)
 					MIPSComp::jit->ClearCache();
 				INFO_LOG(COMMON, "Loading state from %s", op.filename.c_str());
-				result = CChunkFileReader::Load(op.filename, REVISION, state);
+				result = CChunkFileReader::Load(op.filename, REVISION, state, &reason);
+				if(result)
+					osm.Show(s->T("Loaded State"), 2.0);
+				else {
+					osm.Show(s->T(reason.c_str(), "Load savestate failed"), 2.0);
+				}
 				break;
 
 			case SAVESTATE_SAVE:
@@ -230,6 +242,10 @@ namespace SaveState
 					MIPSComp::jit->ClearCache();
 				INFO_LOG(COMMON, "Saving state to %s", op.filename.c_str());
 				result = CChunkFileReader::Save(op.filename, REVISION, state);
+				if(result)
+					osm.Show(s->T("Saved State"), 2.0);
+				else
+					osm.Show(s->T("Save State Failed"), 2.0);
 				break;
 
 			case SAVESTATE_VERIFY:
@@ -239,7 +255,6 @@ namespace SaveState
 
 			default:
 				ERROR_LOG(COMMON, "Savestate failure: unknown operation type %d", op.type);
-				result = false;
 				break;
 			}
 

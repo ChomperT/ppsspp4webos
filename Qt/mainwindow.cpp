@@ -20,8 +20,6 @@
 #include "QtHost.h"
 #include "EmuThread.h"
 
-const char *stateToLoad = NULL;
-
 // TODO: Make this class thread-aware. Can't send events to a different thread. Currently only works on X11.
 // Needs to use QueuedConnection for signals/slots.
 MainWindow::MainWindow(QWidget *parent) :
@@ -31,7 +29,9 @@ MainWindow::MainWindow(QWidget *parent) :
 	dialogDisasm(0),
 	memoryWindow(0),
 	memoryTexWindow(0),
-	displaylistWindow(0)
+	timer(this),
+	displaylistWindow(0),
+	lastUIState(UISTATE_MENU)
 {
 	ui->setupUi(this);
 
@@ -56,119 +56,24 @@ MainWindow::MainWindow(QWidget *parent) :
 	if (zoom > 4) zoom = 4;
 	SetZoom(zoom);
 
-	EmuThread_Start(emugl);
 	SetGameTitle(fileToStart);
 
-	if (!fileToStart.isNull())
-	{
-		EmuThread_StartGame(fileToStart);
-		UpdateMenus();
+	connect(&timer, SIGNAL(timeout()), this, SLOT(Update()));
+	timer.setInterval(0);
+	timer.start();
 
-		if (stateToLoad != NULL)
-			SaveState::Load(stateToLoad);
-	}
+//	if (!fileToStart.isNull())
+//	{
+//		UpdateMenus();
+
+//		if (stateToLoad != NULL)
+//			SaveState::Load(stateToLoad);
+//	}
 }
 
 MainWindow::~MainWindow()
 {
 	delete ui;
-}
-
-void NativeInit(int argc, const char *argv[], const char *savegame_directory, const char *external_directory, const char *installID)
-{
-	std::string config_filename;
-	Common::EnableCrashingOnCrashes();
-
-	std::string user_data_path = savegame_directory;
-
-	VFSRegister("", new DirectoryAssetReader("assets/"));
-	VFSRegister("", new DirectoryAssetReader(user_data_path.c_str()));
-
-	config_filename = user_data_path + "ppsspp.ini";
-
-	g_Config.Load(config_filename.c_str());
-
-	const char *fileToLog = 0;
-
-	bool hideLog = true;
-#ifdef _DEBUG
-	hideLog = false;
-#endif
-
-	bool gfxLog = false;
-	// Parse command line
-	LogTypes::LOG_LEVELS logLevel = LogTypes::LINFO;
-	for (int i = 1; i < argc; i++) {
-		if (argv[i][0] == '-') {
-			switch (argv[i][1]) {
-			case 'd':
-				// Enable debug logging
-				logLevel = LogTypes::LDEBUG;
-				break;
-			case 'g':
-				gfxLog = true;
-				break;
-			case 'j':
-				g_Config.bJit = true;
-				g_Config.bSaveSettings = false;
-				break;
-			case 'i':
-				g_Config.bJit = false;
-				g_Config.bSaveSettings = false;
-				break;
-			case 'l':
-				hideLog = false;
-				break;
-			case 's':
-				g_Config.bAutoRun = false;
-				g_Config.bSaveSettings = false;
-				break;
-			case '-':
-				if (!strcmp(argv[i], "--log") && i < argc - 1)
-					fileToLog = argv[++i];
-				if (!strncmp(argv[i], "--log=", strlen("--log=")) && strlen(argv[i]) > strlen("--log="))
-					fileToLog = argv[i] + strlen("--log=");
-				if (!strcmp(argv[i], "--state") && i < argc - 1)
-					stateToLoad = argv[++i];
-				if (!strncmp(argv[i], "--state=", strlen("--state=")) && strlen(argv[i]) > strlen("--state="))
-					stateToLoad = argv[i] + strlen("--state=");
-				break;
-			}
-		}
-		else if (fileToStart.isNull())
-		{
-			fileToStart = QString(argv[i]);
-			if (!QFile::exists(fileToStart))
-			{
-				qCritical("File '%s' does not exist!", qPrintable(fileToStart));
-				exit(1);
-			}
-		}
-		else
-		{
-			qCritical("Can only boot one file. Ignoring file '%s'", qPrintable(fileToStart));
-		}
-	}
-
-	if (g_Config.currentDirectory == "")
-	{
-		g_Config.currentDirectory = QDir::homePath().toStdString();
-	}
-
-	g_Config.memCardDirectory = QDir::homePath().toStdString()+"/.ppsspp/";
-	g_Config.flashDirectory = g_Config.memCardDirectory+"/flash/";
-
-	LogManager::Init();
-	if (fileToLog != NULL)
-		LogManager::GetInstance()->ChangeFileLog(fileToLog);
-
-	LogManager::GetInstance()->SetLogLevel(LogTypes::G3D, LogTypes::LERROR);
-
-#if !defined(USING_GLES2)
-	// Start Desktop UI
-	MainWindow* mainWindow = new MainWindow();
-	mainWindow->show();
-#endif
 }
 
 void MainWindow::ShowMemory(u32 addr)
@@ -177,9 +82,15 @@ void MainWindow::ShowMemory(u32 addr)
 		memoryWindow->Goto(addr);
 }
 
+inline float clamp1(float x) {
+	if (x > 1.0f) return 1.0f;
+	if (x < -1.0f) return -1.0f;
+	return x;
+}
+
 void MainWindow::Update()
 {
-	UpdateInputState(&input_state);
+	emugl->updateGL();
 
 	for (int i = 0; i < controllistCount; i++)
 	{
@@ -189,13 +100,20 @@ void MainWindow::Update()
 		else
 			__CtrlButtonUp(controllist[i].psp_id);
 	}
-	__CtrlSetAnalog(input_state.pad_lstick_x, input_state.pad_lstick_y);
+	__CtrlSetAnalogX(clamp1(input_state.pad_lstick_x), 0);
+	__CtrlSetAnalogY(clamp1(input_state.pad_lstick_y), 0);
+	__CtrlSetAnalogX(clamp1(input_state.pad_rstick_x), 1);
+	__CtrlSetAnalogY(clamp1(input_state.pad_rstick_y), 1);
+
+	if (lastUIState != globalUIState) {
+		lastUIState = globalUIState;
+		UpdateMenus();
+	}
 }
 
 void MainWindow::UpdateMenus()
 {
-	// enabling
-	bool enable = g_State.bEmuThreadStarted ? false : true;
+	bool enable = globalUIState == UISTATE_MENU;
 	ui->action_FileLoad->setEnabled(enable);
 	ui->action_FileClose->setEnabled(!enable);
 	ui->action_FileSaveStateFile->setEnabled(!enable);
@@ -204,17 +122,15 @@ void MainWindow::UpdateMenus()
 	ui->action_FileQuickSaveState->setEnabled(!enable);
 	ui->action_CPUDynarec->setEnabled(enable);
 	ui->action_CPUInterpreter->setEnabled(enable);
-	ui->actionUse_MediaEngine->setEnabled(enable);
 	ui->action_DebugDumpFrame->setEnabled(!enable);
 	ui->action_DebugDisassembly->setEnabled(!enable);
 	ui->action_DebugMemoryView->setEnabled(!enable);
 	ui->action_DebugMemoryViewTexture->setEnabled(!enable);
 	ui->action_DebugDisplayList->setEnabled(!enable);
 
-	enable = !Core_IsStepping() ? false : true;
-	ui->action_EmulationRun->setEnabled(g_State.bEmuThreadStarted ? enable : false);
-	ui->action_EmulationPause->setEnabled(g_State.bEmuThreadStarted ? !enable : false);
-	ui->action_EmulationReset->setEnabled(g_State.bEmuThreadStarted ? true : false);
+	ui->action_EmulationRun->setEnabled(Core_IsStepping() || globalUIState == UISTATE_PAUSEMENU);
+	ui->action_EmulationPause->setEnabled(globalUIState == UISTATE_INGAME);
+	ui->action_EmulationReset->setEnabled(globalUIState == UISTATE_INGAME);
 
 	// checking
 	ui->action_EmulationRunLoad->setChecked(g_Config.bAutoRun);
@@ -223,7 +139,6 @@ void MainWindow::UpdateMenus()
 	ui->action_CPUDynarec->setChecked(g_Config.bJit);
 	ui->action_OptionsFastMemory->setChecked(g_Config.bFastMemory);
 	ui->action_OptionsIgnoreIllegalReadsWrites->setChecked(g_Config.bIgnoreBadMemAccess);
-	ui->actionUse_MediaEngine->setChecked(g_Config.bUseMediaEngine);
 
 	ui->action_AFOff->setChecked(g_Config.iAnisotropyLevel == 0);
 	ui->action_AF2x->setChecked(g_Config.iAnisotropyLevel == 2);
@@ -232,7 +147,7 @@ void MainWindow::UpdateMenus()
 	ui->action_AF16x->setChecked(g_Config.iAnisotropyLevel == 16);
 
 	ui->action_OptionsBufferedRendering->setChecked(g_Config.bBufferedRendering);
-	ui->action_OptionsLinearFiltering->setChecked(g_Config.bLinearFiltering);
+	ui->action_OptionsLinearFiltering->setChecked(3 == g_Config.iTexFiltering);
 	ui->action_Simple_2xAA->setChecked(g_Config.SSAntiAliasing);
 
 	ui->action_OptionsScreen1x->setChecked(0 == (g_Config.iWindowZoom - 1));
@@ -244,14 +159,13 @@ void MainWindow::UpdateMenus()
 	ui->action_OptionsHardwareTransform->setChecked(g_Config.bHardwareTransform);
 	ui->action_OptionsUseVBO->setChecked(g_Config.bUseVBO);
 	ui->action_OptionsVertexCache->setChecked(g_Config.bVertexCache);
-	ui->action_OptionsWireframe->setChecked(g_Config.bDrawWireframe);
 	ui->action_OptionsDisplayRawFramebuffer->setChecked(g_Config.bDisplayFramebuffer);
 	ui->actionFrameskip->setChecked(g_Config.iFrameSkip != 0);
 
 	ui->action_Sound->setChecked(g_Config.bEnableSound);
 
 	ui->action_OptionsShowDebugStatistics->setChecked(g_Config.bShowDebugStats);
-	ui->action_Show_FPS_counter->setChecked(g_Config.bShowFPSCounter);
+	ui->action_Show_FPS_counter->setChecked(g_Config.iShowFPSCounter);
 
 	ui->actionLogDefDebug->setChecked(LogManager::GetInstance()->GetLogLevel(LogTypes::COMMON) == LogTypes::LDEBUG);
 	ui->actionLogDefInfo->setChecked(LogManager::GetInstance()->GetLogLevel(LogTypes::COMMON) == LogTypes::LINFO);
@@ -282,7 +196,7 @@ void MainWindow::closeEvent(QCloseEvent *)
 
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
-	if(isFullScreen() && e->key() == Qt::Key_F12)
+	if(isFullScreen() && e->key() == Qt::Key_F11)
 	{
 		on_action_OptionsFullScreen_triggered();
 		return;
@@ -330,18 +244,15 @@ void MainWindow::on_action_FileLoad_triggered()
 	{
 		QFileInfo info(filename);
 		g_Config.currentDirectory = info.absolutePath().toStdString();
-		EmuThread_StartGame(filename);
+		NativeMessageReceived("boot", filename.toStdString().c_str());
 	}
+	UpdateMenus();
 }
 
 void MainWindow::on_action_FileClose_triggered()
 {
 	if(dialogDisasm)
 		dialogDisasm->Stop();
-
-	// This will wait for ppsspp to pause
-	EmuThread_LockDraw(true);
-	EmuThread_LockDraw(false);
 
 	if(dialogDisasm && dialogDisasm->isVisible())
 		dialogDisasm->close();
@@ -352,7 +263,7 @@ void MainWindow::on_action_FileClose_triggered()
 	if(displaylistWindow && displaylistWindow->isVisible())
 		displaylistWindow->close();
 
-	EmuThread_StopGame();
+	NativeMessageReceived("stop", "");
 	SetGameTitle("");
 	UpdateMenus();
 }
@@ -413,35 +324,23 @@ void MainWindow::on_action_FileSaveStateFile_triggered()
 void MainWindow::on_action_FileExit_triggered()
 {
 	on_action_FileClose_triggered();
-	EmuThread_Stop();
 	QApplication::exit(0);
 }
 
 void MainWindow::on_action_EmulationRun_triggered()
 {
-	if (g_State.bEmuThreadStarted)
-	{
-		if(dialogDisasm)
-		{
-			dialogDisasm->Stop();
-			dialogDisasm->Go();
-		}
-	}
+	NativeMessageReceived("run", "");
 }
 
 void MainWindow::on_action_EmulationPause_triggered()
 {
-	if(dialogDisasm)
-		dialogDisasm->Stop();
+	NativeMessageReceived("pause", "");
 }
 
 void MainWindow::on_action_EmulationReset_triggered()
 {
 	if(dialogDisasm)
 		dialogDisasm->Stop();
-
-	EmuThread_LockDraw(true);
-	EmuThread_LockDraw(false);
 
 	if(dialogDisasm)
 		dialogDisasm->close();
@@ -452,9 +351,7 @@ void MainWindow::on_action_EmulationReset_triggered()
 	if(displaylistWindow)
 		displaylistWindow->close();
 
-	EmuThread_StopGame();
-
-	EmuThread_StartGame(GetCurrentFilename());
+	NativeMessageReceived("reset", "");
 }
 
 void MainWindow::on_action_EmulationRunLoad_triggered()
@@ -560,12 +457,6 @@ void MainWindow::on_action_OptionsIgnoreIllegalReadsWrites_triggered()
 	UpdateMenus();
 }
 
-void MainWindow::on_actionUse_MediaEngine_triggered()
-{
-	g_Config.bUseMediaEngine = !g_Config.bUseMediaEngine;
-	UpdateMenus();
-}
-
 void MainWindow::on_action_OptionsControls_triggered()
 {
 	controls->show();
@@ -618,7 +509,10 @@ void MainWindow::on_action_OptionsBufferedRendering_triggered()
 
 void MainWindow::on_action_OptionsLinearFiltering_triggered()
 {
-	g_Config.bLinearFiltering = !g_Config.bLinearFiltering;
+	if (g_Config.iTexFiltering == 0)
+		g_Config.iTexFiltering = 3;
+	else
+		g_Config.iTexFiltering = 0;
 	UpdateMenus();
 }
 
@@ -675,12 +569,6 @@ void MainWindow::on_action_OptionsUseVBO_triggered()
 void MainWindow::on_action_OptionsVertexCache_triggered()
 {
 	g_Config.bVertexCache = !g_Config.bVertexCache;
-	UpdateMenus();
-}
-
-void MainWindow::on_action_OptionsWireframe_triggered()
-{
-	g_Config.bDrawWireframe = !g_Config.bDrawWireframe;
 	UpdateMenus();
 }
 
@@ -753,7 +641,7 @@ void MainWindow::on_action_OptionsShowDebugStatistics_triggered()
 
 void MainWindow::on_action_Show_FPS_counter_triggered()
 {
-	g_Config.bShowFPSCounter = !g_Config.bShowFPSCounter;
+	g_Config.iShowFPSCounter = !g_Config.iShowFPSCounter;
 	UpdateMenus();
 }
 

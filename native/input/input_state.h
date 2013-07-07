@@ -1,8 +1,29 @@
 #pragma once
 
+// InputState is the simple way of getting input. All the input we have is collected
+// to a canonical Xbox360-style pad fully automatically.
+//
+// Recommended for use in game UIs and games that don't have advanced needs.
+//
+// For more detailed and configurable input, implement NativeTouch, NativeKey and NativeAxis and do your
+// own mapping. Might later move the mapping system from PPSSPP to native.
+
 #include "math/lin/vec3.h"
 #include "base/mutex.h"
 #include "base/basictypes.h"
+#include <map>
+
+// Default device IDs
+
+enum {
+	DEVICE_ID_DEFAULT = 0,  // Old Android
+	DEVICE_ID_KEYBOARD = 1,  // PC keyboard, android keyboards
+	DEVICE_ID_PAD_0 = 10,  // Generic joypads
+	DEVICE_ID_X360_0 = 20,  // XInput joypads
+	DEVICE_ID_ACCELEROMETER = 30,
+};
+
+const char *GetDeviceName(int deviceId);
 
 enum {
 	PAD_BUTTON_A = 1,
@@ -26,12 +47,24 @@ enum {
 	PAD_BUTTON_JOY_DOWN = 1<<15,
 	PAD_BUTTON_JOY_LEFT = 1<<16,
 	PAD_BUTTON_JOY_RIGHT = 1<<17,
+
+	PAD_BUTTON_LEFT_THUMB = 1 << 18,   // Click left thumb stick on X360
+	PAD_BUTTON_RIGHT_THUMB = 1 << 19,   // Click right thumb stick on X360
+
+	PAD_BUTTON_LEFT_TRIGGER = 1 << 21,   // Click left thumb stick on X360
+	PAD_BUTTON_RIGHT_TRIGGER = 1 << 22,   // Click left thumb stick on X360
+
+	PAD_BUTTON_UNTHROTTLE = 1 << 20, // Click Tab to unthrottle
 };
 
 #ifndef MAX_POINTERS
 #define MAX_POINTERS 8
 #endif
-	
+
+#ifndef MAX_KEYQUEUESIZE
+#define MAX_KEYQUEUESIZE 20
+#endif
+
 // Collection of all possible inputs, and automatically computed
 // deltas where applicable.
 struct InputState {
@@ -47,7 +80,7 @@ struct InputState {
 		memset(pointer_down, 0, sizeof(pointer_down));
 	}
 
-	// Gamepad style input
+	// Gamepad style input. For ease of use.
 	int pad_buttons; // bitfield
 	int pad_last_buttons;
 	int pad_buttons_down;	// buttons just pressed this frame
@@ -71,8 +104,6 @@ struct InputState {
 	bool accelerometer_valid;
 	Vec3 acc;
 
-	// TODO: Add key arrays
-
 private:
 	DISALLOW_COPY_AND_ASSIGN(InputState);
 };
@@ -85,3 +116,42 @@ inline void UpdateInputState(InputState *input) {
 inline void EndInputState(InputState *input) {
 	input->pad_last_buttons = input->pad_buttons;
 }
+
+enum {
+	TOUCH_MOVE = 1,
+	TOUCH_DOWN = 2,
+	TOUCH_UP = 4,
+	TOUCH_CANCEL = 8,  // Sent by scrollviews to their children when they detect a scroll
+	TOUCH_WHEEL = 16,  // Scrollwheel event. Usually only affects Y.
+};
+
+// Used for asynchronous touch input.
+// DOWN is always on its own. 
+// MOVE and UP can be combined.
+struct TouchInput {
+	float x;
+	float y;
+	int id;  // can be relied upon to be 0...MAX_POINTERS
+	int flags;
+	double timestamp;
+};
+
+#undef KEY_DOWN
+
+enum {
+	KEY_DOWN = 1,
+	KEY_UP = 2,
+};
+
+struct KeyInput {
+	int deviceId;
+	int keyCode;  // Android keycodes are the canonical keycodes, everyone else map to them.
+	int flags;
+};
+
+struct AxisInput {
+	int deviceId;
+	int axisId;  // Android axis Ids are the canonical ones.
+	float value;
+	int flags;
+};

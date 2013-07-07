@@ -15,16 +15,19 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "../../MemMap.h"
-#include "../../Config.h"
-#include "../MIPSAnalyst.h"
-#include "Core/Reporting.h"
+#include <cmath>
+#include <limits>
+#include "math/math_util.h"
 
+#include "Core/MemMap.h"
+#include "Core/Config.h"
+#include "Core/Reporting.h"
+#include "Core/MIPS/MIPSAnalyst.h"
+
+#include "Core/MIPS/MIPSVFPUUtils.h"
 #include "Jit.h"
-#include "../MIPSVFPUUtils.h"
 #include "RegCache.h"
 
-// VERY UNFINISHED!
 
 // All functions should have CONDITIONAL_DISABLE, so we can narrow things down to a file quickly.
 // Currently known non working ones should have DISABLE.
@@ -42,6 +45,24 @@
 #define _FD ((op>>6 ) & 0x1F)
 #define _POS  ((op>>6 ) & 0x1F)
 #define _SIZE ((op>>11 ) & 0x1F)
+
+
+#ifndef M_LOG2E
+#define M_E        2.71828182845904523536f
+#define M_LOG2E    1.44269504088896340736f
+#define M_LOG10E   0.434294481903251827651f
+#define M_LN2      0.693147180559945309417f
+#define M_LN10     2.30258509299404568402f
+#undef M_PI
+#define M_PI       3.14159265358979323846f
+#define M_PI_2     1.57079632679489661923f
+#define M_PI_4     0.785398163397448309616f
+#define M_1_PI     0.318309886183790671538f
+#define M_2_PI     0.636619772367581343076f
+#define M_2_SQRTPI 1.12837916709551257390f
+#define M_SQRT2    1.41421356237309504880f
+#define M_SQRT1_2  0.707106781186547524401f
+#endif
 
 using namespace Gen;
 
@@ -105,8 +126,7 @@ void Jit::ApplyPrefixST(u8 *vregs, u32 prefix, VectorSize sz) {
 			// Prefix may say "z, z, z, z" but if this is a pair, we force to x.
 			// TODO: But some ops seem to use const 0 instead?
 			if (regnum >= n) {
-				ERROR_LOG(CPU, "Invalid VFPU swizzle: %08x / %d", prefix, sz);
-				Reporting::ReportMessage("Invalid VFPU swizzle: %08x / %d", prefix, sz);
+				ERROR_LOG_REPORT(CPU, "Invalid VFPU swizzle: %08x / %d", prefix, sz);
 				regnum = 0;
 			}
 			MOVSS(fpr.VX(vregs[i]), fpr.V(origV[regnum]));
@@ -327,8 +347,8 @@ void Jit::Comp_SVQ(u32 op)
 			}
 			safe.Finish();
 
-			fpr.ReleaseSpillLocks();
 			gpr.UnlockAll();
+			fpr.ReleaseSpillLocks();
 		}
 		break;
 
@@ -436,12 +456,26 @@ void Jit::Comp_VecDo3(u32 op) {
 		}
 		break;
 	case 25: //VFPU1
-		switch ((op >> 23)&7)
+		switch ((op >> 23) & 7)
 		{
 		case 0: // d[i] = s[i] * t[i]; break; //vmul
 			xmmop = &XEmitter::MULSS;
 			break;
 		}
+		break;
+	case 27: //VFPU3
+		switch ((op >> 23) & 3)
+		{
+		case 2:  // vmin
+			xmmop = &XEmitter::MINSS;
+			break;
+		case 3:  // vmax
+			xmmop = &XEmitter::MAXSS;
+			break;
+		}
+		break;
+	default:
+		_dbg_assert_msg_(CPU,0,"invalid VecDo3");
 		break;
 	}
 
@@ -485,8 +519,10 @@ void Jit::Comp_VecDo3(u32 op) {
 		if (!fpr.V(sregs[i]).IsSimpleReg(tempxregs[i]))
 			MOVSS(tempxregs[i], fpr.V(sregs[i]));
 	}
+
 	for (int i = 0; i < n; ++i)
 		(this->*xmmop)(tempxregs[i], fpr.V(tregs[i]));
+
 	for (int i = 0; i < n; ++i)
 	{
 		if (!fpr.V(dregs[i]).IsSimpleReg(tempxregs[i]))
@@ -498,11 +534,108 @@ void Jit::Comp_VecDo3(u32 op) {
 	fpr.ReleaseSpillLocks();
 }
 
+// There are no immediates for floating point, so we need to load these
+// from RAM. Might as well have a table ready.
+static const float mulTable[32] = {
+	1.0f/(1UL<<0),1.0f/(1UL<<1),1.0f/(1UL<<2),1.0f/(1UL<<3),
+	1.0f/(1UL<<4),1.0f/(1UL<<5),1.0f/(1UL<<6),1.0f/(1UL<<7),
+	1.0f/(1UL<<8),1.0f/(1UL<<9),1.0f/(1UL<<10),1.0f/(1UL<<11),
+	1.0f/(1UL<<12),1.0f/(1UL<<13),1.0f/(1UL<<14),1.0f/(1UL<<15),
+	1.0f/(1UL<<16),1.0f/(1UL<<17),1.0f/(1UL<<18),1.0f/(1UL<<19),
+	1.0f/(1UL<<20),1.0f/(1UL<<21),1.0f/(1UL<<22),1.0f/(1UL<<23),
+	1.0f/(1UL<<24),1.0f/(1UL<<25),1.0f/(1UL<<26),1.0f/(1UL<<27),
+	1.0f/(1UL<<28),1.0f/(1UL<<29),1.0f/(1UL<<30),1.0f/(1UL<<31),
+};
+
+void Jit::Comp_Vi2f(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	if (js.HasUnknownPrefix())
+		DISABLE;
+
+	VectorSize sz = GetVecSize(op);
+	int n = GetNumVectorElements(sz);
+
+	int imm = (op >> 16) & 0x1f;
+	const float *mult = &mulTable[imm];
+
+	u8 sregs[4], dregs[4];
+	GetVectorRegsPrefixS(sregs, sz, _VS);
+	GetVectorRegsPrefixD(dregs, sz, _VD);
+
+	MOVSS(XMM1, M((void *)mult));
+	for (int i = 0; i < n; i++) {
+		if (fpr.V(sregs[i]).IsSimpleReg())
+			MOVD_xmm(R(EAX), fpr.VX(sregs[i]));
+		else
+			MOV(32, R(EAX), fpr.V(sregs[i]));
+		CVTSI2SS(XMM0, R(EAX));
+		MULSS(XMM0, R(XMM1));
+		fpr.MapRegV(dregs[i], MAP_DIRTY);
+		MOVSS(fpr.V(dregs[i]), XMM0);
+	}
+
+	ApplyPrefixD(dregs, sz);
+	fpr.ReleaseSpillLocks();
+}
+
+static const float cst_constants[32] = {
+	0,
+	std::numeric_limits<float>::max(),  // all these are verified on real PSP
+	sqrtf(2.0f),
+	sqrtf(0.5f),
+	2.0f/sqrtf((float)M_PI),
+	2.0f/(float)M_PI,
+	1.0f/(float)M_PI,
+	(float)M_PI/4,
+	(float)M_PI/2,
+	(float)M_PI,
+	(float)M_E,
+	(float)M_LOG2E,
+	(float)M_LOG10E,
+	(float)M_LN2,
+	(float)M_LN10,
+	2*(float)M_PI,
+	(float)M_PI/6,
+	log10f(2.0f),
+	logf(10.0f)/logf(2.0f),
+	sqrtf(3.0f)/2.0f,
+};
+
+void Jit::Comp_Vcst(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	if (js.HasUnknownPrefix())
+		DISABLE;
+
+	int conNum = (op >> 16) & 0x1f;
+	int vd = _VD;
+
+	VectorSize sz = GetVecSize(op);
+	int n = GetNumVectorElements(sz);
+
+	u8 dregs[4];
+	GetVectorRegsPrefixD(dregs, sz, _VD);
+
+	MOVSS(XMM0, M((void *)&cst_constants[conNum]));
+	fpr.MapRegsV(dregs, sz, MAP_NOINIT | MAP_DIRTY);
+	for (int i = 0; i < n; i++) {
+		MOVSS(fpr.V(dregs[i]), XMM0);
+	}
+	ApplyPrefixD(dregs, sz);
+	fpr.ReleaseSpillLocks();
+}
+
 void Jit::Comp_VV2Op(u32 op) {
 	CONDITIONAL_DISABLE;
 
 	if (js.HasUnknownPrefix())
 		DISABLE;
+
+	// Pre-processing: Eliminate silly no-op VMOVs, common in Wipeout Pure
+	if (((op >> 16) & 0x1f) == 0 && _VS == _VD && js.HasNoPrefix()) {
+		return;
+	}
 
 	VectorSize sz = GetVecSize(op);
 	int n = GetNumVectorElements(sz);
@@ -691,6 +824,49 @@ void Jit::Comp_Vmtvc(u32 op) {
 	}
 }
 
+void Jit::Comp_VMatrixInit(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	if (js.HasUnknownPrefix())
+		DISABLE;
+
+	MatrixSize sz = GetMtxSize(op);
+	int n = GetMatrixSide(sz);
+
+	u8 dregs[16];
+	GetMatrixRegs(dregs, sz, _VD);
+
+	switch ((op >> 16) & 0xF) {
+	case 3: // vmidt
+		MOVSS(XMM0, M((void *) &zero));
+		MOVSS(XMM1, M((void *) &one));
+		for (int a = 0; a < n; a++) {
+			for (int b = 0; b < n; b++) {
+				MOVSS(fpr.V(dregs[a * 4 + b]), a == b ? XMM1 : XMM0);
+			}
+		}
+		break;
+	case 6: // vmzero
+		MOVSS(XMM0, M((void *) &zero));
+		for (int a = 0; a < n; a++) {
+			for (int b = 0; b < n; b++) {
+				MOVSS(fpr.V(dregs[a * 4 + b]), XMM0);
+			}
+		}
+		break;
+	case 7: // vmone
+		MOVSS(XMM0, M((void *) &one));
+		for (int a = 0; a < n; a++) {
+			for (int b = 0; b < n; b++) {
+				MOVSS(fpr.V(dregs[a * 4 + b]), XMM0);
+			}
+		}
+		break;
+	}
+
+	fpr.ReleaseSpillLocks();
+}
+
 void Jit::Comp_Vmmov(u32 op) {
 	CONDITIONAL_DISABLE;
 
@@ -731,6 +907,237 @@ void Jit::Comp_Vmmov(u32 op) {
 	}
 
 	fpr.ReleaseSpillLocks();
+}
+
+void Jit::Comp_VScl(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	if (js.HasUnknownPrefix())
+		DISABLE;
+
+	VectorSize sz = GetVecSize(op);
+	int n = GetNumVectorElements(sz);
+
+	u8 sregs[4], dregs[4], scale;
+	GetVectorRegsPrefixS(sregs, sz, _VS);
+	// TODO: Prefixes seem strange...
+	GetVectorRegsPrefixT(&scale, V_Single, _VT);
+	GetVectorRegsPrefixD(dregs, sz, _VD);
+
+	// Move to XMM0 early, so we don't have to worry about overlap with scale.
+	MOVSS(XMM0, fpr.V(scale));
+
+	X64Reg tempxregs[4];
+	for (int i = 0; i < n; ++i)
+	{
+		if (!IsOverlapSafeAllowS(dregs[i], i, n, sregs))
+		{
+			int reg = fpr.GetTempV();
+			fpr.MapRegV(reg, MAP_NOINIT | MAP_DIRTY);
+			fpr.SpillLockV(reg);
+			tempxregs[i] = fpr.VX(reg);
+		}
+		else
+		{
+			fpr.MapRegV(dregs[i], (dregs[i] == sregs[i] ? 0 : MAP_NOINIT) | MAP_DIRTY);
+			fpr.SpillLockV(dregs[i]);
+			tempxregs[i] = fpr.VX(dregs[i]);
+		}
+	}
+	for (int i = 0; i < n; ++i)
+	{
+		if (!fpr.V(sregs[i]).IsSimpleReg(tempxregs[i]))
+			MOVSS(tempxregs[i], fpr.V(sregs[i]));
+		MULSS(tempxregs[i], R(XMM0));
+	}
+	for (int i = 0; i < n; ++i)
+	{
+		if (!fpr.V(dregs[i]).IsSimpleReg(tempxregs[i]))
+			MOVSS(fpr.V(dregs[i]), tempxregs[i]);
+	}
+	ApplyPrefixD(dregs, sz);
+
+	fpr.ReleaseSpillLocks();
+}
+
+void Jit::Comp_Vmmul(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	// TODO: This probably ignores prefixes?
+	if (js.MayHavePrefix())
+		DISABLE;
+
+	MatrixSize sz = GetMtxSize(op);
+	int n = GetMatrixSide(sz);
+
+	u8 sregs[16], tregs[16], dregs[16];
+	GetMatrixRegs(sregs, sz, _VS);
+	GetMatrixRegs(tregs, sz, _VT);
+	GetMatrixRegs(dregs, sz, _VD);
+
+	// TODO: test overlap, fix non-optimal.
+	u8 tempregs[16];
+	for (int a = 0; a < n; a++)
+	{
+		for (int b = 0; b < n; b++)
+		{
+			XORPS(XMM0, R(XMM0));
+			for (int c = 0; c < n; c++)
+			{
+				MOVSS(XMM1, fpr.V(sregs[b * 4 + c]));
+				MULSS(XMM1, fpr.V(tregs[a * 4 + c]));
+				ADDSS(XMM0, R(XMM1));
+			}
+			u8 temp = (u8) fpr.GetTempV();
+			fpr.MapRegV(temp, MAP_NOINIT | MAP_DIRTY);
+			MOVSS(fpr.VX(temp), R(XMM0));
+			fpr.StoreFromRegisterV(temp);
+			tempregs[a * 4 + b] = temp;
+		}
+	}
+	for (int a = 0; a < n; a++)
+	{
+		for (int b = 0; b < n; b++)
+		{
+			u8 temp = tempregs[a * 4 + b];
+			fpr.MapRegV(temp, 0);
+			MOVSS(fpr.V(dregs[a * 4 + b]), fpr.VX(temp));
+		}
+	}
+
+	fpr.ReleaseSpillLocks();
+}
+
+void Jit::Comp_Vmscl(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	// TODO: This probably ignores prefixes?
+	if (js.MayHavePrefix())
+		DISABLE;
+
+	MatrixSize sz = GetMtxSize(op);
+	int n = GetMatrixSide(sz);
+
+	u8 sregs[16], dregs[16], scale;
+	GetMatrixRegs(sregs, sz, _VS);
+	GetVectorRegs(&scale, V_Single, _VT);
+	GetMatrixRegs(dregs, sz, _VD);
+
+	// Move to XMM0 early, so we don't have to worry about overlap with scale.
+	MOVSS(XMM0, fpr.V(scale));
+
+	// TODO: test overlap, optimize.
+	u8 tempregs[16];
+	for (int a = 0; a < n; a++)
+	{
+		for (int b = 0; b < n; b++)
+		{
+			u8 temp = (u8) fpr.GetTempV();
+			fpr.MapRegV(temp, MAP_NOINIT | MAP_DIRTY);
+			MOVSS(fpr.VX(temp), fpr.V(sregs[a * 4 + b]));
+			MULSS(fpr.VX(temp), R(XMM0));
+			fpr.StoreFromRegisterV(temp);
+			tempregs[a * 4 + b] = temp;
+		}
+	}
+	for (int a = 0; a < n; a++)
+	{
+		for (int b = 0; b < n; b++)
+		{
+			u8 temp = tempregs[a * 4 + b];
+			fpr.MapRegV(temp, 0);
+			MOVSS(fpr.V(dregs[a * 4 + b]), fpr.VX(temp));
+		}
+	}
+
+	fpr.ReleaseSpillLocks();
+}
+
+void Jit::Comp_Vtfm(u32 op) {
+	CONDITIONAL_DISABLE;
+
+	// TODO: This probably ignores prefixes?  Or maybe uses D?
+	if (js.MayHavePrefix())
+		DISABLE;
+
+	VectorSize sz = GetVecSize(op);
+	MatrixSize msz = GetMtxSize(op);
+	int n = GetNumVectorElements(sz);
+	int ins = (op >> 23) & 7;
+
+	bool homogenous = false;
+	if (n == ins)
+	{
+		n++;
+		sz = (VectorSize)((int)(sz) + 1);
+		msz = (MatrixSize)((int)(msz) + 1);
+		homogenous = true;
+	}
+	// Otherwise, n should already be ins + 1.
+	else if (n != ins + 1)
+		DISABLE;
+
+	u8 sregs[16], dregs[4], tregs[4];
+	GetMatrixRegs(sregs, msz, _VS);
+	GetVectorRegs(tregs, sz, _VT);
+	GetVectorRegs(dregs, sz, _VD);
+
+	// TODO: test overlap, optimize.
+	u8 tempregs[4];
+	for (int i = 0; i < n; i++)
+	{
+		XORPS(XMM0, R(XMM0));
+		for (int k = 0; k < n; k++)
+		{
+			MOVSS(XMM1, fpr.V(sregs[i * 4 + k]));
+			if (!homogenous || k != n - 1)
+				MULSS(XMM1, fpr.V(tregs[k]));
+			ADDSS(XMM0, R(XMM1));
+		}
+
+		u8 temp = (u8) fpr.GetTempV();
+		fpr.MapRegV(temp, MAP_NOINIT | MAP_DIRTY);
+		MOVSS(fpr.VX(temp), R(XMM0));
+		fpr.StoreFromRegisterV(temp);
+		tempregs[i] = temp;
+	}
+	for (int i = 0; i < n; i++)
+	{
+		u8 temp = tempregs[i];
+		fpr.MapRegV(temp, 0);
+		MOVSS(fpr.V(dregs[i]), fpr.VX(temp));
+	}
+
+	fpr.ReleaseSpillLocks();
+}
+
+
+void Jit::Comp_VHdp(u32 op) {
+	DISABLE;
+}
+
+void Jit::Comp_VCrs(u32 op) {
+	DISABLE;
+}
+
+void Jit::Comp_VDet(u32 op) {
+	DISABLE;
+}
+
+void Jit::Comp_Vi2x(u32 op) {
+	DISABLE;
+}
+
+void Jit::Comp_Vx2i(u32 op) {
+	DISABLE;
+}
+
+void Jit::Comp_Vf2i(u32 op) {
+	DISABLE;
+}
+
+void Jit::Comp_Vhoriz(u32 op) {
+	DISABLE;
 }
 
 }

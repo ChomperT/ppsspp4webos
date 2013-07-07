@@ -17,6 +17,8 @@
 
 #include "../../MemMap.h"
 #include "../MIPSAnalyst.h"
+#include "Common/CPUDetect.h"
+#include "Core/Config.h"
 #include "Core/Reporting.h"
 
 #include "ArmJit.h"
@@ -116,24 +118,24 @@ namespace MIPSComp
 				// Prefix may say "z, z, z, z" but if this is a pair, we force to x.
 				// TODO: But some ops seem to use const 0 instead?
 				if (regnum >= n) {
-					ERROR_LOG(CPU, "Invalid VFPU swizzle: %08x / %d", prefix, sz);
-					Reporting::ReportMessage("Invalid VFPU swizzle: %08x / %d", prefix, sz);
+					ERROR_LOG_REPORT(CPU, "Invalid VFPU swizzle: %08x / %d", prefix, sz);
 					regnum = 0;
 				}
 				
 				if (abs) {
 					VABS(fpr.V(vregs[i]), fpr.V(origV[regnum]));
+					if (negate)
+						VNEG(fpr.V(vregs[i]), fpr.V(vregs[i]));
 				} else {
-					VMOV(fpr.V(vregs[i]), fpr.V(origV[regnum]));
+					if (negate)
+						VNEG(fpr.V(vregs[i]), fpr.V(origV[regnum]));
+					else
+						VMOV(fpr.V(vregs[i]), fpr.V(origV[regnum]));
 				}
-			} else {
-				// TODO: There is VMOV s, imm on ARM, that can generate some of these constants. Not 1/3 or 1/6 though.
-				MOVI2F(fpr.V(vregs[i]), constantArray[regnum + (abs<<2)], R0);
-			}
 
-			// TODO: This can be integrated into the VABS / VMOV above, and also the constants.
-			if (negate)
-				VNEG(fpr.V(vregs[i]), fpr.V(vregs[i]));
+			} else {
+				MOVI2F(fpr.V(vregs[i]), constantArray[regnum + (abs<<2)], R0, negate);
+			}
 
 			// TODO: This probably means it will swap out soon, inefficiently...
 			fpr.ReleaseSpillLockV(vregs[i]);
@@ -166,39 +168,22 @@ namespace MIPSComp
 
 			int sat = (js.prefixD >> (i * 2)) & 3;
 			if (sat == 1) {
+				// clamped = fabs(x) - fabs(x-0.5f) + 0.5f; // [ 0, 1]
 				fpr.MapRegV(vregs[i], MAP_DIRTY);
-				// ARGH this is a pain - no MIN/MAX in non-NEON VFP!
-				// NEON does have min/max though so this should only be a fallback.
-				MOVI2F(S0, 0.0, R0);
-				MOVI2F(S1, 1.0, R0);
-				VCMP(fpr.V(vregs[i]), S1);
-				VMRS_APSR();
-				SetCC(CC_GE);
-				VMOV(fpr.V(vregs[i]), S1);
-				FixupBranch skip = B();
-				SetCC(CC_AL);
-				VCMP(fpr.V(vregs[i]), S0);
-				VMRS_APSR();
-				SetCC(CC_LE);
-				VMOV(fpr.V(vregs[i]), S0);
-				SetCC(CC_AL);
-				SetJumpTarget(skip);
+				MOVI2F(S0, 0.5f, R0);
+				VABS(S1, fpr.V(vregs[i]));                  // S1 = fabs(x)
+				VSUB(fpr.V(vregs[i]), fpr.V(vregs[i]), S0); // S2 = fabs(x-0.5f) {VABD}
+				VABS(fpr.V(vregs[i]), fpr.V(vregs[i]));
+				VSUB(fpr.V(vregs[i]), S1, fpr.V(vregs[i])); // v[i] = S1 - S2 + 0.5f
+				VADD(fpr.V(vregs[i]), fpr.V(vregs[i]), S0);
 			} else if (sat == 3) {
+				// clamped = fabs(x) - fabs(x-1.0f);        // [-1, 1]
 				fpr.MapRegV(vregs[i], MAP_DIRTY);
-				MOVI2F(S0, -1.0, R0);
-				MOVI2F(S1, 1.0, R0);
-				VCMP(fpr.V(vregs[i]), S1);
-				VMRS_APSR();
-				SetCC(CC_GE);
-				VMOV(fpr.V(vregs[i]), S1);
-				FixupBranch skip = B();
-				SetCC(CC_AL);
-				VCMP(fpr.V(vregs[i]), S0);
-				VMRS_APSR();
-				SetCC(CC_LE);
-				VMOV(fpr.V(vregs[i]), S0);
-				SetCC(CC_AL);
-				SetJumpTarget(skip);
+				MOVI2F(S0, 1.0f, R0);
+				VABS(S1, fpr.V(vregs[i]));                  // S1 = fabs(x)
+				VSUB(fpr.V(vregs[i]), fpr.V(vregs[i]), S0); // S2 = fabs(x-1.0f) {VABD}
+				VABS(fpr.V(vregs[i]), fpr.V(vregs[i]));
+				VSUB(fpr.V(vregs[i]), S1, fpr.V(vregs[i])); // v[i] = S1 - S2
 			}
 		}
 	}
@@ -210,27 +195,82 @@ namespace MIPSComp
 		int vt = ((op >> 16) & 0x1f) | ((op & 3) << 5);
 		int rs = _RS;
 
+		bool doCheck = false;
 		switch (op >> 26)
 		{
 		case 50: //lv.s  // VI(vt) = Memory::Read_U32(addr);
 			{
-				gpr.MapReg(rs);
-				SetR0ToEffectiveAddress(rs, imm);
-				ADD(R0, R0, R11);
+				// CC might be set by slow path below, so load regs first.
 				fpr.MapRegV(vt, MAP_DIRTY | MAP_NOINIT);
 				fpr.ReleaseSpillLocks();
+				if (gpr.IsImm(rs)) {
+					u32 addr = (imm + gpr.GetImm(rs)) & 0x3FFFFFFF;
+					MOVI2R(R0, addr + (u32)Memory::base);
+				} else {
+					gpr.MapReg(rs);
+					if (g_Config.bFastMemory) {
+						SetR0ToEffectiveAddress(rs, imm);
+					} else {
+						SetCCAndR0ForSafeAddress(rs, imm, R1);
+						doCheck = true;
+					}
+					ADD(R0, R0, R11);
+				}
+#ifdef __ARM_ARCH_7S__
+                FixupBranch skip;
+                if (doCheck) {
+                    skip = B_CC(CC_EQ);
+                }
+                VLDR(fpr.V(vt), R0, 0);
+                if (doCheck) {
+                    SetJumpTarget(skip);
+                    SetCC(CC_AL);
+                }
+#else
 				VLDR(fpr.V(vt), R0, 0);
+				if (doCheck) {
+					SetCC(CC_EQ);
+					MOVI2F(fpr.V(vt), 0.0f, R0);
+					SetCC(CC_AL);
+				}
+#endif
 			}
 			break;
 
 		case 58: //sv.s   // Memory::Write_U32(VI(vt), addr);
 			{
-				gpr.MapReg(rs);
-				SetR0ToEffectiveAddress(rs, imm);
-				ADD(R0, R0, R11);
+				// CC might be set by slow path below, so load regs first.
 				fpr.MapRegV(vt);
 				fpr.ReleaseSpillLocks();
+				if (gpr.IsImm(rs)) {
+					u32 addr = (imm + gpr.GetImm(rs)) & 0x3FFFFFFF;
+					MOVI2R(R0, addr + (u32)Memory::base);
+				} else {
+					gpr.MapReg(rs);
+					if (g_Config.bFastMemory) {
+						SetR0ToEffectiveAddress(rs, imm);
+					} else {
+						SetCCAndR0ForSafeAddress(rs, imm, R1);
+						doCheck = true;
+					}
+					ADD(R0, R0, R11);
+				}
+#ifdef __ARM_ARCH_7S__
+                FixupBranch skip;
+                if (doCheck) {
+                    skip = B_CC(CC_EQ);
+                }
+                VSTR(fpr.V(vt), R0, 0);
+                if (doCheck) {
+                    SetJumpTarget(skip);
+                    SetCC(CC_AL);
+                }
+#else
 				VSTR(fpr.V(vt), R0, 0);
+				if (doCheck) {
+					SetCC(CC_AL);
+				}
+#endif
 			}
 			break;
 
@@ -248,35 +288,102 @@ namespace MIPSComp
 		int vt = (((op >> 16) & 0x1f)) | ((op&1) << 5);
 		int rs = _RS;
 
+		bool doCheck = false;
 		switch (op >> 26)
 		{
 		case 54: //lv.q
 			{
-				gpr.MapReg(rs);
-				SetR0ToEffectiveAddress(rs, imm);
-				ADD(R0, R0, R11);
-
+				// CC might be set by slow path below, so load regs first.
 				u8 vregs[4];
 				GetVectorRegs(vregs, V_Quad, vt);
 				fpr.MapRegsV(vregs, V_Quad, MAP_DIRTY | MAP_NOINIT);
 				fpr.ReleaseSpillLocks();
+
+				if (gpr.IsImm(rs)) {
+					u32 addr = (imm + gpr.GetImm(rs)) & 0x3FFFFFFF;
+					MOVI2R(R0, addr + (u32)Memory::base);
+				} else {
+					gpr.MapReg(rs);
+					if (g_Config.bFastMemory) {
+						SetR0ToEffectiveAddress(rs, imm);
+					} else {
+						SetCCAndR0ForSafeAddress(rs, imm, R1);
+						doCheck = true;
+					}
+					ADD(R0, R0, R11);
+				}
+
+#ifdef __ARM_ARCH_7S__
+                FixupBranch skip;
+                if (doCheck) {
+                    skip = B_CC(CC_EQ);
+                }
+                
 				for (int i = 0; i < 4; i++)
 					VLDR(fpr.V(vregs[i]), R0, i * 4);
+                
+                if (doCheck) {
+                    SetJumpTarget(skip);
+                    SetCC(CC_AL);
+                }
+#else
+				for (int i = 0; i < 4; i++)
+					VLDR(fpr.V(vregs[i]), R0, i * 4);
+
+				if (doCheck) {
+					SetCC(CC_EQ);
+					MOVI2R(R0, 0);
+					for (int i = 0; i < 4; i++)
+						VMOV(fpr.V(vregs[i]), R0);
+					SetCC(CC_AL);
+				}
+#endif
 			}
 			break;
 
 		case 62: //sv.q
 			{
-				gpr.MapReg(rs);
-				SetR0ToEffectiveAddress(rs, imm);
-				ADD(R0, R0, R11);
-
+				// CC might be set by slow path below, so load regs first.
 				u8 vregs[4];
 				GetVectorRegs(vregs, V_Quad, vt);
 				fpr.MapRegsV(vregs, V_Quad, 0);
 				fpr.ReleaseSpillLocks();
+
+				if (gpr.IsImm(rs)) {
+					u32 addr = (imm + gpr.GetImm(rs)) & 0x3FFFFFFF;
+					MOVI2R(R0, addr + (u32)Memory::base);
+				} else {
+					gpr.MapReg(rs);
+					if (g_Config.bFastMemory) {
+						SetR0ToEffectiveAddress(rs, imm);
+					} else {
+						SetCCAndR0ForSafeAddress(rs, imm, R1);
+						doCheck = true;
+					}
+					ADD(R0, R0, R11);
+				}
+
+#ifdef __ARM_ARCH_7S__
+                FixupBranch skip;
+                if (doCheck) {
+                    skip = B_CC(CC_EQ);
+                }
+                
 				for (int i = 0; i < 4; i++)
 					VSTR(fpr.V(vregs[i]), R0, i * 4);
+
+                if (doCheck) {
+                    SetJumpTarget(skip);
+                    SetCC(CC_AL);
+                }
+#else
+				for (int i = 0; i < 4; i++)
+					VSTR(fpr.V(vregs[i]), R0, i * 4);
+
+				if (doCheck) {
+					SetCC(CC_AL);
+				}
+#endif
 			}
 			break;
 
@@ -322,6 +429,11 @@ namespace MIPSComp
 
 		ApplyPrefixD(dregs, sz);
 		fpr.ReleaseSpillLocks();
+	}
+
+	void Jit::Comp_VMatrixInit(u32 op)
+	{
+		DISABLE;
 	}
 
 	void Jit::Comp_VDot(u32 op)
@@ -463,6 +575,11 @@ namespace MIPSComp
 		if (js.HasUnknownPrefix())
 			DISABLE;
 
+		// Pre-processing: Eliminate silly no-op VMOVs, common in Wipeout Pure
+		if (((op >> 16) & 0x1f) == 0 && _VS == _VD && js.HasNoPrefix()) {
+			return;
+		}
+
 		VectorSize sz = GetVecSize(op);
 		int n = GetNumVectorElements(sz);
 
@@ -506,19 +623,26 @@ namespace MIPSComp
 				VNEG(tempxregs[i], fpr.V(sregs[i]));
 				break;
 			case 4: // if (s[i] < 0) d[i] = 0; else {if(s[i] > 1.0f) d[i] = 1.0f; else d[i] = s[i];} break;    // vsat0
-				DISABLE;
+				MOVI2F(S0, 0.5f, R0);
+				VABS(S1, fpr.V(sregs[i]));                          // S1 = fabs(x)
+				VSUB(fpr.V(tempxregs[i]), fpr.V(sregs[i]), S0);     // S2 = fabs(x-0.5f) {VABD}
+				VABS(fpr.V(tempxregs[i]), fpr.V(tempxregs[i]));
+				VSUB(fpr.V(tempxregs[i]), S1, fpr.V(tempxregs[i])); // v[i] = S1 - S2 + 0.5f
+				VADD(fpr.V(tempxregs[i]), fpr.V(tempxregs[i]), S0);
 				break;
 			case 5: // if (s[i] < -1.0f) d[i] = -1.0f; else {if(s[i] > 1.0f) d[i] = 1.0f; else d[i] = s[i];} break;  // vsat1
-				DISABLE;
+				MOVI2F(S0, 1.0f, R0);
+				VABS(S1, fpr.V(sregs[i]));                          // S1 = fabs(x)
+				VSUB(fpr.V(tempxregs[i]), fpr.V(sregs[i]), S0);     // S2 = fabs(x-1.0f) {VABD}
+				VABS(fpr.V(tempxregs[i]), fpr.V(tempxregs[i]));
+				VSUB(fpr.V(tempxregs[i]), S1, fpr.V(tempxregs[i])); // v[i] = S1 - S2
 				break;
 			case 16: // d[i] = 1.0f / s[i]; break; //vrcp
-				MOVI2R(R0, 0x3F800000);  // 1.0f
-				VMOV(S0, R0);
+				MOVI2F(S0, 1.0f, R0);
 				VDIV(tempxregs[i], S0, fpr.V(sregs[i]));
 				break;
 			case 17: // d[i] = 1.0f / sqrtf(s[i]); break; //vrsq
-				MOVI2R(R0, 0x3F800000);  // 1.0f
-				VMOV(S0, R0);
+				MOVI2F(S0, 1.0f, R0);
 				VSQRT(S1, fpr.V(sregs[i]));
 				VDIV(tempxregs[i], S0, S1);
 				break;
@@ -542,8 +666,7 @@ namespace MIPSComp
 				DISABLE;
 				break;
 			case 24: // d[i] = -1.0f / s[i]; break; // vnrcp
-				MOVI2R(R0, 0x80000000 | 0x3F800000);  // -1.0f
-				VMOV(S0, R0);
+				MOVI2F(S0, -1.0f, R0);
 				VDIV(tempxregs[i], S0, fpr.V(sregs[i]));
 				break;
 			case 26: // d[i] = -sinf((float)M_PI_2 * s[i]); break; // vnsin
@@ -645,6 +768,58 @@ namespace MIPSComp
 	}
 
 	void Jit::Comp_Vmmov(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_VScl(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vmmul(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vmscl(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vtfm(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_VHdp(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_VCrs(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_VDet(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vi2x(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vx2i(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vf2i(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vi2f(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vcst(u32 op) {
+		DISABLE;
+	}
+
+	void Jit::Comp_Vhoriz(u32 op) {
 		DISABLE;
 	}
 

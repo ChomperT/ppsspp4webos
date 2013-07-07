@@ -19,27 +19,23 @@
 
 #include <cmath>
 
+#include "math/math_util.h"
+
+#include "Common/Common.h"
 #include "../Core.h"
 #include "MIPS.h"
 #include "MIPSInt.h"
 #include "MIPSTables.h"
 #include "Core/Reporting.h"
+#include "Core/Config.h"
 
 #include "../HLE/HLE.h"
 #include "../System.h"
 
-#ifdef __APPLE__
-using std::isnan;
-#endif
-#ifdef _MSC_VER
-#define isnan _isnan
-#endif
-
 #define R(i) (currentMIPS->r[i])
-#define RF(i) (*(float*)(&(currentMIPS->r[i])))
 #define F(i) (currentMIPS->f[i])
-#define FI(i) (*(u32*)(&(currentMIPS->f[i])))
-#define FsI(i) (*(s32*)(&(currentMIPS->f[i])))
+#define FI(i) (currentMIPS->fi[i])
+#define FsI(i) (currentMIPS->fs[i])
 #define PC (currentMIPS->pc)
 
 #define _RS ((op>>21) & 0x1F)
@@ -159,6 +155,9 @@ namespace MIPSInt
 			break;
 		case 27:  // D-cube. Hit Writeback Invalidate.
 			break;
+		case 30:  // GTA LCS, a lot. Fill (prefetch).
+			break;
+
 		default:
 			DEBUG_LOG(CPU,"cache instruction affecting %08x : function %i", addr, func);
 		}
@@ -193,7 +192,8 @@ namespace MIPSInt
 	{
 		Reporting::ReportMessage("BREAK instruction hit");
 		ERROR_LOG(CPU, "BREAK!");
-		Core_UpdateState(CORE_STEPPING);
+		if (!g_Config.bIgnoreBadMemAccess) 
+			Core_UpdateState(CORE_STEPPING);
 		PC += 4;
 	}
 
@@ -718,7 +718,7 @@ namespace MIPSInt
 			} 
 			else if (_RS == 1) //rotr
 			{
-				R(rd) = _rotr(R(rt), sa);
+				R(rd) = __rotr(R(rt), sa);
 				break;
 			}
 			else
@@ -734,7 +734,7 @@ namespace MIPSInt
 			}
 			else if (_FD == 1) // rotrv
 			{
-				R(rd) = _rotr(R(rt), R(rs));
+				R(rd) = __rotr(R(rt), R(rs));
 				break;
 			}
 			else goto wrong;
@@ -898,7 +898,7 @@ namespace MIPSInt
 
 		case 1: //un
 		case 9: //ngle
-			cond = isnan(F(fs)) || isnan(F(ft));
+			cond = my_isnan(F(fs)) || my_isnan(F(ft));
 			break;
 
 		case 2: //eq
@@ -908,7 +908,7 @@ namespace MIPSInt
 
 		case 3: //ueq
 		case 11: //ngl
-			cond = (F(fs) == F(ft)) || isnan(F(fs)) || isnan(F(ft));
+			cond = (F(fs) == F(ft)) || my_isnan(F(fs)) || my_isnan(F(ft));
 			break;
 
 		case 4: //olt
@@ -918,7 +918,7 @@ namespace MIPSInt
 
 		case 5: //ult
 		case 13: //nge
-			cond = (F(fs) < F(ft)) || isnan(F(fs)) || isnan(F(ft));
+			cond = (F(fs) < F(ft)) || my_isnan(F(fs)) || my_isnan(F(ft));
 			break;
 
 		case 6: //ole
@@ -928,7 +928,7 @@ namespace MIPSInt
 
 		case 7: //ule
 		case 15: //ngt
-			cond = (F(fs) <= F(ft)) || isnan(F(fs)) || isnan(F(ft));
+			cond = (F(fs) <= F(ft)) || my_isnan(F(fs)) || my_isnan(F(ft));
 			break;
 
 		default:

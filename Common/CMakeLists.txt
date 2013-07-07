@@ -12,8 +12,9 @@ set(SRCS
 	MemoryUtil.cpp
 	Misc.cpp
 	MsgHandler.cpp
-	StringUtil.cpp
+	StringUtils.cpp
 	Thread.cpp
+	ThreadPools.cpp
 	Timer.cpp
 )
 

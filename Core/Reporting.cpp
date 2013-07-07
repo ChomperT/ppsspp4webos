@@ -15,12 +15,22 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "Core/Reporting.h"
+
+#include "Common/CPUDetect.h"
 #include "Common/StdThread.h"
+#include "Core/CoreTiming.h"
 #include "Core/Config.h"
 #include "Core/System.h"
+#include "Core/HLE/sceDisplay.h"
+#include "Core/HLE/sceKernelMemory.h"
+#include "GPU/GPUInterface.h"
+#include "GPU/GPUState.h"
 
 #include "net/http_client.h"
 #include "net/resolve.h"
+#include "net/url.h"
+
 #include "base/buffer.h"
 
 #include <stdlib.h>
@@ -52,53 +62,64 @@ namespace Reporting
 	static Payload payloadBuffer[PAYLOAD_BUFFER_SIZE];
 	static int payloadBufferPos = 0;
 
+	// Returns the full host (e.g. report.ppsspp.org:80.)
+	inline std::string ServerHost()
+	{
+		if (g_Config.sReportHost.compare("default") == 0)
+			return "";
+		return g_Config.sReportHost;
+	}
+
+	// Returns the length of the hostname part (e.g. before the :80.)
 	static size_t ServerHostnameLength()
 	{
-		if (g_Config.sReportHost.empty())
+		if (!IsEnabled())
 			return g_Config.sReportHost.npos;
 
 		// IPv6 literal?
-		if (g_Config.sReportHost[0] == '[')
+		std::string host = ServerHost();
+		if (host[0] == '[')
 		{
-			size_t length = g_Config.sReportHost.find("]:");
-			if (length != g_Config.sReportHost.npos)
+			size_t length = host.find("]:");
+			if (length != host.npos)
 				++length;
 			return length;
 		}
 		else
-			return g_Config.sReportHost.find(':');
+			return host.find(':');
 	}
 
+	// Returns only the hostname part (e.g. "report.ppsspp.org".)
 	static const char *ServerHostname()
 	{
-		if (g_Config.sReportHost.empty())
-			return NULL;
-		// Disabled by default for now.
-		if (g_Config.sReportHost.compare("default") == 0)
+		if (!IsEnabled())
 			return NULL;
 
+		std::string host = ServerHost();
 		size_t length = ServerHostnameLength();
-		if (length == g_Config.sReportHost.npos)
-			return g_Config.sReportHost.c_str();
 
-		lastHostname = g_Config.sReportHost.substr(0, length);
+		// This means there's no port number - it's already the hostname.
+		if (length == host.npos)
+			lastHostname = host;
+		else
+			lastHostname = host.substr(0, length);
 		return lastHostname.c_str();
 	}
 
+	// Returns only the port part (e.g. 80) as an int.
 	static int ServerPort()
 	{
-		if (g_Config.sReportHost.empty())
-			return 0;
-		// Disabled by default for now.
-		if (g_Config.sReportHost.compare("default") == 0)
+		if (!IsEnabled())
 			return 0;
 
+		std::string host = ServerHost();
 		size_t offset = ServerHostnameLength();
-		if (offset == g_Config.sReportHost.npos)
+		// If there's no port, use the default one.
+		if (offset == host.npos)
 			return DEFAULT_PORT;
 
 		// Skip the colon.
-		std::string port = g_Config.sReportHost.substr(offset + 1);
+		std::string port = host.substr(offset + 1);
 		return atoi(port.c_str());
 	}
 
@@ -121,7 +142,7 @@ namespace Reporting
 		if (http.Resolve(ServerHostname(), ServerPort()))
 		{
 			http.Connect();
-			http.POST("/report/message", data, "application/x-www-urlencoded", output);
+			http.POST("/report/message", data, "application/x-www-form-urlencoded", output);
 			http.Disconnect();
 			result = true;
 		}
@@ -130,41 +151,104 @@ namespace Reporting
 		return result;
 	}
 
+	std::string StripTrailingNull(const std::string &str)
+	{
+		size_t pos = str.find_first_of('\0');
+		if (pos != str.npos)
+			return str.substr(0, pos);
+		return str;
+	}
+
+	std::string GetPlatformIdentifer()
+	{
+		// TODO: Do we care about OS version?
+#if defined(ANDROID)
+		return "Android";
+#elif defined(_WIN64)
+		return "Windows 64";
+#elif defined(_WIN32)
+		return "Windows";
+#elif defined(IOS)
+		return "iOS";
+#elif defined(__APPLE__)
+		return "Mac";
+#elif defined(__SYMBIAN32__)
+		return "Symbian";
+#elif defined(__FreeBSD__)
+		return "BSD";
+#elif defined(BLACKBERRY)
+		return "Blackberry";
+#elif defined(LOONGSON)
+		return "Loongson";
+#elif defined(MEEGO_EDITION_HARMATTAN)
+		return "Nokia N9/N950";
+#elif defined(__linux__)
+		return "Linux";
+#else
+		return "Unknown";
+#endif
+	}
+
 	int Process(int pos)
 	{
 		Payload &payload = payloadBuffer[pos];
 
-		const int PARAM_BUFFER_SIZE = 4096;
-		char temp[PARAM_BUFFER_SIZE];
+		std::string gpuPrimary, gpuFull;
+		if (gpu)
+			gpu->GetReportingInfo(gpuPrimary, gpuFull);
 
-		// TODO: Need to escape these values, add more.
-		snprintf(temp, PARAM_BUFFER_SIZE - 1, "version=%s&game=%s_%s",
-			PPSSPP_GIT_VERSION,
-			g_paramSFO.GetValueString("DISC_ID").c_str(),
-			g_paramSFO.GetValueString("DISC_VERSION").c_str());
+		UrlEncoder postdata;
+		postdata.Add("version", PPSSPP_GIT_VERSION);
+		// TODO: Maybe ParamSFOData shouldn't include nulls in std::strings?  Don't work to break savedata, though...
+		postdata.Add("game", StripTrailingNull(g_paramSFO.GetValueString("DISC_ID")) + "_" + StripTrailingNull(g_paramSFO.GetValueString("DISC_VERSION")));
+		postdata.Add("game_title", StripTrailingNull(g_paramSFO.GetValueString("TITLE")));
+		postdata.Add("gpu", gpuPrimary);
+		postdata.Add("gpu_full", gpuFull);
+		postdata.Add("cpu", cpu_info.Summarize());
+		postdata.Add("platform", GetPlatformIdentifer());
+		postdata.Add("sdkver", sceKernelGetCompiledSdkVersion());
+		postdata.Add("pixel_width", PSP_CoreParameter().pixelWidth);
+		postdata.Add("pixel_height", PSP_CoreParameter().pixelHeight);
+		postdata.Add("ticks", (const uint64_t)CoreTiming::GetTicks());
 
-		std::string data;
+		if (g_Config.iShowFPSCounter)
+		{
+			float vps, fps;
+			__DisplayGetAveragedFPS(&vps, &fps);
+			postdata.Add("vps", vps);
+			postdata.Add("fps", fps);
+		}
+
+		// TODO: Settings, savestate/savedata status, some measure of speed/fps?
+
 		switch (payload.type)
 		{
 		case MESSAGE:
-			// TODO: Escape.
-			data = std::string(temp) + "&message=" + payload.string1 + "&value=" + payload.string2;
+			postdata.Add("message", payload.string1);
+			postdata.Add("value", payload.string2);
 			payload.string1.clear();
 			payload.string2.clear();
 
-			SendReportRequest("/report/message", data);
+			SendReportRequest("/report/message", postdata.ToString());
 			break;
 		}
 
 		return 0;
 	}
 
-	void ReportMessage(const char *message, ...)
+	bool IsEnabled()
 	{
-		if (g_Config.sReportHost.empty() || CheckSpamLimited())
-			return;
+		if (g_Config.sReportHost.empty())
+			return false;
 		// Disabled by default for now.
 		if (g_Config.sReportHost.compare("default") == 0)
+			return false;
+		return true;
+	}
+
+	void ReportMessage(const char *message, ...)
+	{
+		if (!IsEnabled() || CheckSpamLimited())
 			return;
 
 		const int MESSAGE_BUFFER_SIZE = 32768;

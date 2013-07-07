@@ -2,6 +2,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <direct.h>
+#ifndef strcasecmp
+#define strcasecmp _stricmp
+#endif
 #else
 #include <dirent.h>
 #include <unistd.h>
@@ -11,7 +14,7 @@
 #include <string>
 #include <set>
 #include <algorithm>
-#include <stdio.h>
+#include <cstdio>
 #include <sys/stat.h>
 #include <ctype.h>
 
@@ -26,17 +29,17 @@
 // Hack
 #ifdef __SYMBIAN32__
 static inline int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result) {
-    struct dirent *readdir_entry;
+	struct dirent *readdir_entry;
 
-    readdir_entry = readdir(dirp);
-    if (readdir_entry == NULL) {
-        *result = NULL;
-        return errno;
-    }
+	readdir_entry = readdir(dirp);
+	if (readdir_entry == NULL) {
+		*result = NULL;
+		return errno;
+	}
 
-    *entry = *readdir_entry;
-    *result = entry;
-    return 0;
+	*entry = *readdir_entry;
+	*result = entry;
+	return 0;
 }
 #endif
 
@@ -167,16 +170,17 @@ bool getFileInfo(const char *path, FileInfo *fileInfo)
 	fileInfo->fullName = path;
 
 #ifdef _WIN32
-	fileInfo->size = 0;
-	FILE *f = fopen(path, "rb");
-	if (f) {
-		fseek(f, 0, SEEK_END);
-		fileInfo->size = ftell(f);
-		fclose(f);
+	WIN32_FILE_ATTRIBUTE_DATA attrs;
+	if (!GetFileAttributesExA(path, GetFileExInfoStandard, &attrs)) {
+		fileInfo->size = 0;
+		fileInfo->isDirectory = false;
+		fileInfo->exists = false;
+		return false;
 	}
-	DWORD attributes = GetFileAttributes(path);
-	fileInfo->isDirectory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-	fileInfo->isWritable = (attributes & FILE_ATTRIBUTE_READONLY) == 0;
+	fileInfo->size = (uint64_t)attrs.nFileSizeLow | ((uint64_t)attrs.nFileSizeHigh << 32);
+	fileInfo->isDirectory = (attrs.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	fileInfo->isWritable = (attrs.dwFileAttributes & FILE_ATTRIBUTE_READONLY) == 0;
+	fileInfo->exists = true;
 #else
 	struct stat64 file_info;
 
@@ -187,12 +191,14 @@ bool getFileInfo(const char *path, FileInfo *fileInfo)
 
 	if (result < 0) {
 		WLOG("IsDirectory: stat failed on %s", path);
+		fileInfo->exists = false;
 		return false;
 	}
 
 	fileInfo->isDirectory = S_ISDIR(file_info.st_mode);
 	fileInfo->isWritable = false;
 	fileInfo->size = file_info.st_size;
+	fileInfo->exists = true;
 	// HACK: approximation
 	if (file_info.st_mode & 0200)
 		fileInfo->isWritable = true;
@@ -210,6 +216,17 @@ std::string getFileExtension(const std::string &fn) {
 	return ext;
 }
 
+bool FileInfo::operator <(const FileInfo &other) const {
+	if (isDirectory && !other.isDirectory)
+		return true;
+	else if (!isDirectory && other.isDirectory)
+		return false;
+	if (strcasecmp(name.c_str(), other.name.c_str()) < 0)
+		return true;
+	else
+		return false;
+}
+
 size_t getFilesInDir(const char *directory, std::vector<FileInfo> *files, const char *filter) {
 	size_t foundEntries = 0;
 	std::set<std::string> filters;
@@ -225,6 +242,8 @@ size_t getFilesInDir(const char *directory, std::vector<FileInfo> *files, const 
 			filter++;
 		}
 	}
+	if (tmp.size())
+		filters.insert(tmp);
 #ifdef _WIN32
 	// Find the first file in the directory.
 	WIN32_FIND_DATA ffd;
@@ -245,6 +264,10 @@ size_t getFilesInDir(const char *directory, std::vector<FileInfo> *files, const 
 	struct dirent_large { struct dirent entry; char padding[FILENAME_MAX+1]; };
 	struct dirent_large diren;
 	struct dirent *result = NULL;
+
+	//std::string directoryWithSlash = directory;
+	//if (directoryWithSlash.back() != '/')
+	//	directoryWithSlash += "/";
 
 	DIR *dirp = opendir(directory);
 	if (!dirp)
@@ -269,6 +292,7 @@ size_t getFilesInDir(const char *directory, std::vector<FileInfo> *files, const 
 		info.fullName = std::string(directory) + "/" + virtualName;
 		info.isDirectory = isDirectory(info.fullName);
 		info.exists = true;
+		info.size = 0;
 		if (!info.isDirectory) {
 			std::string ext = getFileExtension(info.fullName);
 			if (filter) {
@@ -302,16 +326,28 @@ void deleteFile(const char *file)
 	}
 #endif
 }
+
+void deleteDir(const char *dir)
+{
+#ifdef _WIN32
+	if (!RemoveDirectory(dir)) {
+		ELOG("Error deleting directory %s: %i", dir, GetLastError());
+	}
+#else
+	rmdir(dir);
+#endif
+}
+
 #endif
 
 std::string getDir(const std::string &path)
 {
 	if (path == "/")
 		return path;
-	int n = path.size() - 1;
+	int n = (int)path.size() - 1;
 	while (n >= 0 && path[n] != '\\' && path[n] != '/')
 		n--;
-	std::string cutpath = path.substr(0, n);
+	std::string cutpath = n > 0 ? path.substr(0, n) : "";
 	for (size_t i = 0; i < cutpath.size(); i++)
 	{
 		if (cutpath[i] == '\\') cutpath[i] = '/';
@@ -324,6 +360,14 @@ std::string getDir(const std::string &path)
 	return cutpath;
 }
 
+std::string getFilename(std::string path) {
+	size_t off = getDir(path).size() + 1;
+	if (off < path.size())
+		return path.substr(off);
+	else
+		return path;
+}
+
 void mkDir(const std::string &path)
 {
 #ifdef _WIN32
@@ -332,3 +376,29 @@ void mkDir(const std::string &path)
 	mkdir(path.c_str(), 0777);
 #endif
 }
+
+#ifdef _WIN32
+// Returns a vector with the device names
+std::vector<std::string> getWindowsDrives()
+{
+	std::vector<std::string> drives;
+
+	const DWORD buffsize = GetLogicalDriveStrings(0, NULL);
+	std::vector<TCHAR> buff(buffsize);
+	if (GetLogicalDriveStrings(buffsize, buff.data()) == buffsize - 1)
+	{
+		auto drive = buff.data();
+		while (*drive)
+		{
+			std::string str(drive);
+			str.pop_back();	// we don't want the final backslash
+			str += "/";
+			drives.push_back(str);
+			
+			// advance to next drive
+			while (*drive++) {}
+		}
+	}
+	return drives;
+}
+#endif

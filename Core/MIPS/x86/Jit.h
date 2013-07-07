@@ -26,15 +26,15 @@
 #endif
 
 #include "Common/x64Emitter.h"
-#include "JitCache.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "RegCache.h"
 #include "RegCacheFPU.h"
 
 namespace MIPSComp
 {
 
-// This is called when Jit hits a breakpoint.
-void JitBreakpoint();
+// This is called when Jit hits a breakpoint.  Returns 1 when hit.
+u32 JitBreakpoint();
 
 struct JitOptions
 {
@@ -111,6 +111,9 @@ struct JitState
 		}
 		return false;
 	}
+	bool HasNoPrefix() const {
+		return (prefixDFlag & PREFIX_KNOWN) && (prefixSFlag & PREFIX_KNOWN) && (prefixTFlag & PREFIX_KNOWN) && (prefixS == 0xE4 && prefixT == 0xE4 && prefixD == 0);
+	}
 	void EatPrefix() {
 		if ((prefixSFlag & PREFIX_KNOWN) == 0 || prefixS != 0xE4) {
 			prefixSFlag = PREFIX_KNOWN_DIRTY;
@@ -185,6 +188,7 @@ public:
 	void Comp_RType3(u32 op);
 	void Comp_ShiftType(u32 op);
 	void Comp_Allegrex(u32 op);
+	void Comp_Allegrex2(u32 op);
 	void Comp_VBranch(u32 op);
 	void Comp_MulDivType(u32 op);
 	void Comp_Special3(u32 op);
@@ -197,12 +201,26 @@ public:
 	void Comp_SVQ(u32 op);
 	void Comp_VPFX(u32 op);
 	void Comp_VVectorInit(u32 op);
+	void Comp_VMatrixInit(u32 op);
 	void Comp_VDot(u32 op);
 	void Comp_VecDo3(u32 op);
 	void Comp_VV2Op(u32 op);
 	void Comp_Mftv(u32 op);
 	void Comp_Vmtvc(u32 op);
 	void Comp_Vmmov(u32 op);
+	void Comp_VScl(u32 op);
+	void Comp_Vmmul(u32 op);
+	void Comp_Vmscl(u32 op);
+	void Comp_Vtfm(u32 op);
+	void Comp_VHdp(u32 op);
+	void Comp_VCrs(u32 op);
+	void Comp_VDet(u32 op);
+	void Comp_Vi2x(u32 op);
+	void Comp_Vx2i(u32 op);
+	void Comp_Vf2i(u32 op);
+	void Comp_Vi2f(u32 op);
+	void Comp_Vcst(u32 op);
+	void Comp_Vhoriz(u32 op);
 
 	void Comp_DoNothing(u32 op);
 
@@ -256,9 +274,16 @@ private:
 	void CompShiftVar(u32 op, void (XEmitter::*shift)(int, OpArg, OpArg), u32 (*doImm)(const u32, const u32));
 	void CompITypeMemRead(u32 op, u32 bits, void (XEmitter::*mov)(int, int, X64Reg, OpArg), void *safeFunc);
 	void CompITypeMemWrite(u32 op, u32 bits, void *safeFunc);
+	void CompITypeMemUnpairedLR(u32 op, bool isStore);
+	void CompITypeMemUnpairedLRInner(u32 op, X64Reg shiftReg);
 
 	void CompFPTriArith(u32 op, void (XEmitter::*arith)(X64Reg reg, OpArg), bool orderMatters);
 	void CompFPComp(int lhs, int rhs, u8 compare, bool allowNaN = false);
+
+	void CallProtectedFunction(void *func, const OpArg &arg1);
+	void CallProtectedFunction(void *func, const OpArg &arg1, const OpArg &arg2);
+	void CallProtectedFunction(void *func, const u32 arg1, const u32 arg2, const u32 arg3);
+	void CallProtectedFunction(void *func, const OpArg &arg1, const u32 arg2, const u32 arg3);
 
 	JitBlockCache blocks;
 	JitOptions jo;
@@ -275,7 +300,7 @@ private:
 	class JitSafeMem
 	{
 	public:
-		JitSafeMem(Jit *jit, int raddr, s32 offset);
+		JitSafeMem(Jit *jit, int raddr, s32 offset, u32 alignMask = 0xFFFFFFFF);
 
 		// Emit code necessary for a memory write, returns true if MOV to dest is needed.
 		bool PrepareWrite(OpArg &dest, int size);
@@ -319,6 +344,7 @@ private:
 		bool needsCheck_;
 		bool needsSkip_;
 		bool far_;
+		u32 alignMask_;
 		u32 iaddr_;
 		X64Reg xaddr_;
 		FixupBranch tooLow_, tooHigh_, skip_;

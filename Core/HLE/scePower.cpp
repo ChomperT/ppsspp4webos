@@ -22,6 +22,7 @@
 
 #include "scePower.h"
 #include "sceKernelThread.h"
+#include "Core/Config.h"
 
 const int PSP_POWER_ERROR_TAKEN_SLOT = 0x80000020;
 const int PSP_POWER_ERROR_SLOTS_FULL = 0x80000022;
@@ -29,13 +30,15 @@ const int PSP_POWER_ERROR_PRIVATE_SLOT = 0x80000023;
 const int PSP_POWER_ERROR_EMPTY_SLOT = 0x80000025;
 const int PSP_POWER_ERROR_INVALID_CB = 0x80000100;
 const int PSP_POWER_ERROR_INVALID_SLOT = 0x80000102;
-const int PSP_POWER_ERROR_INVALID_TYPE = 0x80000107;
 
 const int PSP_POWER_CB_AC_POWER = 0x00001000;
 const int PSP_POWER_CB_BATTERY_EXIST = 0x00000080;
 const int PSP_POWER_CB_BATTERY_FULL = 0x00000064;
 
 const int POWER_CB_AUTO = -1;
+
+const int PSP_MODEL_FAT	= 0;
+const int PSP_MODEL_SLIM = 1;
 
 const int numberOfCBPowerSlots = 16;
 const int numberOfCBPowerSlotsPrivate = 32;
@@ -50,6 +53,12 @@ static int busFreq = 111;
 void __PowerInit() {
 	memset(powerCbSlots, 0, sizeof(powerCbSlots));
 	volatileMemLocked = false;
+
+	if(g_Config.iLockedCPUSpeed > 0) {
+		CoreTiming::SetClockFrequencyMHz(g_Config.iLockedCPUSpeed);
+		pllFreq = g_Config.iLockedCPUSpeed;
+		busFreq = g_Config.iLockedCPUSpeed / 2;
+	}
 }
 
 void __PowerDoState(PointerWrap &p) {
@@ -66,6 +75,12 @@ int scePowerGetBatteryLifePercent() {
 int scePowerGetBatteryLifeTime() {
 	DEBUG_LOG(HLE, "0=scePowerGetBatteryLifeTime()");
 	// 0 means we're on AC power.
+	return 0;
+}
+
+int scePowerGetBatteryTemp() {
+	DEBUG_LOG(HLE, "0=scePowerGetBatteryTemp()");
+	// 0 means celsius temperature of the battery
 	return 0;
 }
 
@@ -164,7 +179,7 @@ int sceKernelPowerLock(int lockType) {
 	if (lockType == 0) {
 		return 0;
 	} else {
-		return PSP_POWER_ERROR_INVALID_TYPE;
+		return SCE_KERNEL_ERROR_INVALID_MODE;
 	}
 }
 
@@ -173,7 +188,7 @@ int sceKernelPowerUnlock(int lockType) {
 	if (lockType == 0) {
 		return 0;
 	} else {
-		return PSP_POWER_ERROR_INVALID_TYPE;
+		return SCE_KERNEL_ERROR_INVALID_MODE;
 	}
 }
 
@@ -218,29 +233,55 @@ int sceKernelVolatileMemLock(int type, int paddr, int psize) {
 
 
 u32 scePowerSetClockFrequency(u32 pllfreq, u32 cpufreq, u32 busfreq) {
-	CoreTiming::SetClockFrequencyMHz(cpufreq);
-	pllFreq = pllfreq;
-	busFreq = busfreq;
-	INFO_LOG(HLE,"scePowerSetClockFrequency(%i,%i,%i)", pllfreq, cpufreq, busfreq);
+	if(g_Config.iLockedCPUSpeed > 0) {
+		INFO_LOG(HLE,"scePowerSetClockFrequency(%i,%i,%i): locked by user config at %i, %i, %i", pllfreq, cpufreq, busfreq, g_Config.iLockedCPUSpeed, g_Config.iLockedCPUSpeed, busFreq);
+	}
+	else {
+		CoreTiming::SetClockFrequencyMHz(cpufreq);
+		pllFreq = pllfreq;
+		busFreq = busfreq;
+		INFO_LOG(HLE,"scePowerSetClockFrequency(%i,%i,%i)", pllfreq, cpufreq, busfreq);
+	}
 	return 0;
 }
 
 u32 scePowerSetCpuClockFrequency(u32 cpufreq) {
-	CoreTiming::SetClockFrequencyMHz(cpufreq);
-	DEBUG_LOG(HLE,"scePowerSetCpuClockFrequency(%i)", cpufreq);
+	if(g_Config.iLockedCPUSpeed > 0) {
+		DEBUG_LOG(HLE,"scePowerSetCpuClockFrequency(%i): locked by user config at %i", cpufreq, g_Config.iLockedCPUSpeed);
+	}
+	else {
+		CoreTiming::SetClockFrequencyMHz(cpufreq);
+		DEBUG_LOG(HLE,"scePowerSetCpuClockFrequency(%i)", cpufreq);
+	}
 	return 0;
 }
 
 u32 scePowerSetBusClockFrequency(u32 busfreq) {
-	busFreq = busfreq;
-	DEBUG_LOG(HLE,"scePowerSetBusClockFrequency(%i)", busfreq);
+	if(g_Config.iLockedCPUSpeed > 0) {
+		DEBUG_LOG(HLE,"scePowerSetBusClockFrequency(%i): locked by user config at %i", busfreq, busFreq);
+	}
+	else {
+		busFreq = busfreq;
+		DEBUG_LOG(HLE,"scePowerSetBusClockFrequency(%i)", busfreq);
+	}
 	return 0;
 }
 
+u32 scePowerGetCpuClockFrequency() {
+	int cpuFreq = CoreTiming::GetClockFrequencyMHz();
+	DEBUG_LOG(HLE,"%i=scePowerGetCpuClockFrequency()", cpuFreq);
+	return cpuFreq;
+}
+
+u32 scePowerGetBusClockFrequency() {
+	INFO_LOG(HLE,"%i=scePowerGetBusClockFrequency()", busFreq);
+	return busFreq;
+}
+
 u32 scePowerGetCpuClockFrequencyInt() {
-	int freq = CoreTiming::GetClockFrequencyMHz();
-	DEBUG_LOG(HLE,"%i=scePowerGetCpuClockFrequencyInt()", freq);
-	return freq;
+	int cpuFreq = CoreTiming::GetClockFrequencyMHz();
+	DEBUG_LOG(HLE,"%i=scePowerGetCpuClockFrequencyInt()", cpuFreq);
+	return cpuFreq;
 }
 
 u32 scePowerGetPllClockFrequencyInt() {
@@ -248,26 +289,43 @@ u32 scePowerGetPllClockFrequencyInt() {
 	return pllFreq;
 }
 
-float scePowerGetPllClockFrequencyFloat() {
-	INFO_LOG(HLE, "%f=scePowerGetPllClockFrequencyFloat()", (float)pllFreq);
-	return (float) pllFreq;
-}
-
 u32 scePowerGetBusClockFrequencyInt() {
 	INFO_LOG(HLE,"%i=scePowerGetBusClockFrequencyInt()", busFreq);
 	return busFreq;
 }
 
-// a85880d0, unknown name
+float scePowerGetCpuClockFrequencyFloat() {
+	int cpuFreq = CoreTiming::GetClockFrequencyMHz(); 
+	INFO_LOG(HLE, "%f=scePowerGetCpuClockFrequencyFloat()", (float)cpuFreq);
+	return (float) cpuFreq;
+}
+
+float scePowerGetPllClockFrequencyFloat() {
+	INFO_LOG(HLE, "%f=scePowerGetPllClockFrequencyFloat()", (float)pllFreq);
+	return (float) pllFreq;
+}
+
+float scePowerGetBusClockFrequencyFloat() {
+	INFO_LOG(HLE, "%f=scePowerGetBusClockFrequencyFloat()", (float)busFreq);
+	return (float) busFreq;
+}
+
+int scePowerTick() {
+	DEBUG_LOG(HLE, "scePowerTick()");
+	// Don't think we need to do anything.
+	return 0;
+}
+
+
 u32 IsPSPNonFat() {
-	return 0;  // Fat PSP!
+	return PSP_MODEL_FAT;  
 }
 
 static const HLEFunction scePower[] = {
 	{0x04B7766E,&WrapI_II<scePowerRegisterCallback>,"scePowerRegisterCallback"},
 	{0x2B51FE2F,0,"scePower_2B51FE2F"},
 	{0x442BFBAC,0,"scePowerGetBacklightMaximum"},
-	{0xEFD3C963,0,"scePowerTick"},
+	{0xEFD3C963,&WrapI_V<scePowerTick>,"scePowerTick"},
 	{0xEDC13FE5,0,"scePowerGetIdleTimer"},
 	{0x7F30B3B1,0,"scePowerIdleTimerEnable"},
 	{0x972CE941,0,"scePowerIdleTimerDisable"},
@@ -284,7 +342,7 @@ static const HLEFunction scePower[] = {
 	{0xFD18A0FF,0,"scePowerGetBatteryFullCapacity"},
 	{0x2085D15D,&WrapI_V<scePowerGetBatteryLifePercent>,"scePowerGetBatteryLifePercent"},
 	{0x8EFB3FA2,&WrapI_V<scePowerGetBatteryLifeTime>,"scePowerGetBatteryLifeTime"},
-	{0x28E12023,0,"scePowerGetBatteryTemp"},
+	{0x28E12023,&WrapI_V<scePowerGetBatteryTemp>,"scePowerGetBatteryTemp"},
 	{0x862AE1A6,0,"scePowerGetBatteryElec"},
 	{0x483CE86B,0,"scePowerGetBatteryVolt"},
 	{0x23436A4A,0,"scePowerGetInnerTemp"},
@@ -299,19 +357,19 @@ static const HLEFunction scePower[] = {
 	{0x2875994B,0,"scePower_2875994B"},
 	{0x0074EF9B,0,"scePowerGetResumeCount"},
 	{0xDFA8BAF8,WrapI_I<scePowerUnregisterCallback>,"scePowerUnregisterCallback"},
-	{0xDB9D28DD,WrapI_I<scePowerUnregisterCallback>,"scePowerUnregitserCallback"},	//haha
+	{0xDB9D28DD,WrapI_I<scePowerUnregisterCallback>,"scePowerUnregitserCallback"},	
 	{0x843FBF43,WrapU_U<scePowerSetCpuClockFrequency>,"scePowerSetCpuClockFrequency"},
 	{0xB8D7B3FB,WrapU_U<scePowerSetBusClockFrequency>,"scePowerSetBusClockFrequency"},
-	{0xFEE03A2F,0,"scePowerGetCpuClockFrequency"},
-	{0x478FE6F5,0,"scePowerGetBusClockFrequency"},
+	{0xFEE03A2F,WrapU_V<scePowerGetCpuClockFrequency>,"scePowerGetCpuClockFrequency"},
+	{0x478FE6F5,WrapU_V<scePowerGetBusClockFrequency>,"scePowerGetBusClockFrequency"},
 	{0xFDB5BFE9,WrapU_V<scePowerGetCpuClockFrequencyInt>,"scePowerGetCpuClockFrequencyInt"},
 	{0xBD681969,WrapU_V<scePowerGetBusClockFrequencyInt>,"scePowerGetBusClockFrequencyInt"},
-	{0xB1A52C83,0,"scePowerGetCpuClockFrequencyFloat"},
-	{0x9BADB3EB,0,"scePowerGetBusClockFrequencyFloat"},
+	{0xB1A52C83,WrapF_V<scePowerGetCpuClockFrequencyFloat>,"scePowerGetCpuClockFrequencyFloat"},
+	{0x9BADB3EB,WrapF_V<scePowerGetBusClockFrequencyFloat>,"scePowerGetBusClockFrequencyFloat"},
 	{0x737486F2,WrapU_UUU<scePowerSetClockFrequency>,"scePowerSetClockFrequency"},
 	{0x34f9c463,WrapU_V<scePowerGetPllClockFrequencyInt>,"scePowerGetPllClockFrequencyInt"},
 	{0xea382a27,WrapF_V<scePowerGetPllClockFrequencyFloat>,"scePowerGetPllClockFrequencyFloat"},
-	{0xebd177d6,WrapU_UUU<scePowerSetClockFrequency>,"scePower_driver_EBD177D6"}, //TODO: used in a few places, jpcsp says is the same as scePowerSetClockFrequency
+	{0xebd177d6,WrapU_UUU<scePowerSetClockFrequency>,"scePower_EBD177D6"}, // This is also the same as SetClockFrequency
 	{0x469989ad,WrapU_UUU<scePowerSetClockFrequency>,"scePower_469989ad"},  // This is also the same as SetClockFrequency
 	{0xa85880d0,WrapU_V<IsPSPNonFat>,"scePower_a85880d0_IsPSPNonFat"},
 };

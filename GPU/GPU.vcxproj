@@ -70,6 +70,11 @@
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_MBCS;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <MinimalRebuild>false</MinimalRebuild>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -80,6 +85,12 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;</AdditionalIncludeDirectories>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <OmitFramePointers>false</OmitFramePointers>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <MinimalRebuild>false</MinimalRebuild>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -96,6 +107,9 @@
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
       <PreprocessorDefinitions>_MBCS;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -110,6 +124,13 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <AdditionalIncludeDirectories>../common;..;../native;../native/ext/glew;</AdditionalIncludeDirectories>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <OmitFramePointers>false</OmitFramePointers>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -118,6 +139,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\ext\xbrz\xbrz.h" />
     <ClInclude Include="ge_constants.h" />
     <ClInclude Include="GLES\DisplayListInterpreter.h" />
     <ClInclude Include="GLES\FragmentShaderGenerator.h" />
@@ -126,6 +148,7 @@
     <ClInclude Include="GLES\ShaderManager.h" />
     <ClInclude Include="GLES\StateMapping.h" />
     <ClInclude Include="GLES\TextureCache.h" />
+    <ClInclude Include="GLES\TextureScaler.h" />
     <ClInclude Include="GLES\TransformPipeline.h" />
     <ClInclude Include="GLES\VertexDecoder.h" />
     <ClInclude Include="GLES\VertexShaderGenerator.h" />
@@ -137,6 +160,7 @@
     <ClInclude Include="Null\NullGpu.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\ext\xbrz\xbrz.cpp" />
     <ClCompile Include="GLES\DisplayListInterpreter.cpp" />
     <ClCompile Include="GLES\FragmentShaderGenerator.cpp" />
     <ClCompile Include="GLES\Framebuffer.cpp" />
@@ -144,6 +168,7 @@
     <ClCompile Include="GLES\ShaderManager.cpp" />
     <ClCompile Include="GLES\StateMapping.cpp" />
     <ClCompile Include="GLES\TextureCache.cpp" />
+    <ClCompile Include="GLES\TextureScaler.cpp" />
     <ClCompile Include="GLES\TransformPipeline.cpp" />
     <ClCompile Include="GLES\VertexDecoder.cpp">
       <AssemblerOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">AssemblyAndSourceCode</AssemblerOutput>

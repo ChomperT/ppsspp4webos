@@ -19,6 +19,7 @@
 #include "HLE.h"
 #include <map>
 #include <vector>
+#include <string>
 #include "../MemMap.h"
 #include "../Config.h"
 #include "Core/CoreTiming.h"
@@ -53,9 +54,12 @@ enum
 	HLE_AFTER_DEBUG_BREAK = 0x20,
 };
 
+typedef std::vector<Syscall> SyscallVector;
+typedef std::map<std::string, SyscallVector> SyscallVectorByModule;
+
 static std::vector<HLEModule> moduleDB;
-static std::vector<Syscall> unresolvedSyscalls;
-static std::vector<Syscall> exportedCalls;
+static SyscallVectorByModule unresolvedSyscalls;
+static SyscallVectorByModule exportedCalls;
 static int delayedResultEvent = -1;
 static int hleAfterSyscall = HLE_AFTER_NOTHING;
 static const char *hleAfterSyscallReschedReason;
@@ -64,7 +68,7 @@ void hleDelayResultFinish(u64 userdata, int cycleslate)
 {
 	u32 error;
 	SceUID threadID = (SceUID) userdata;
-	SceUID verify = __KernelGetWaitID(threadID, WAITTYPE_DELAY, error);
+	SceUID verify = __KernelGetWaitID(threadID, WAITTYPE_HLEDELAY, error);
 	// The top 32 bits of userdata are the top 32 bits of the 64 bit result.
 	// We can't just put it all in userdata because we need to know the threadID...
 	u64 result = (userdata & 0xFFFFFFFF00000000ULL) | __KernelGetWaitValue(threadID, error);
@@ -83,9 +87,8 @@ void HLEInit()
 
 void HLEDoState(PointerWrap &p)
 {
-	Syscall sc = {""};
-	p.Do(unresolvedSyscalls, sc);
-	p.Do(exportedCalls, sc);
+	p.Do(unresolvedSyscalls);
+	p.Do(exportedCalls);
 	p.Do(delayedResultEvent);
 	CoreTiming::RestoreRegisterEvent(delayedResultEvent, "HLEDelayedResult", hleDelayResultFinish);
 	p.DoMarker("HLE");
@@ -156,14 +159,23 @@ const char *GetFuncName(const char *moduleName, u32 nib)
 	if (func)
 		return func->name;
 
+	SyscallModuleName searchModuleName = {0};
+	strncpy(searchModuleName, moduleName, KERNELOBJECT_MAX_NAME_LENGTH);
+	searchModuleName[KERNELOBJECT_MAX_NAME_LENGTH] = '\0';
+
 	// Was this function exported previously?
 	static char temp[256];
-	for (auto it = exportedCalls.begin(), end = exportedCalls.end(); it != end; ++it)
+	const auto exported = exportedCalls.find(searchModuleName);
+	if (exported != exportedCalls.end())
 	{
-		if (!strcmp(it->moduleName, moduleName) && it->nid == nib)
+		const SyscallVector &syscalls = exported->second;
+		for (auto it = syscalls.begin(), end = syscalls.end(); it != end; ++it)
 		{
-			sprintf(temp, "[EXP: 0x%08x]", nib);
-			return temp;
+			if (it->nid == nib)
+			{
+				sprintf(temp, "[EXP: 0x%08x]", nib);
+				return temp;
+			}
 		}
 	}
 
@@ -212,23 +224,29 @@ void WriteSyscall(const char *moduleName, u32 nib, u32 address)
 	}
 	else
 	{
+		Syscall sysc = {"", address, nib};
+		strncpy(sysc.moduleName, moduleName, KERNELOBJECT_MAX_NAME_LENGTH);
+		sysc.moduleName[KERNELOBJECT_MAX_NAME_LENGTH] = '\0';
+
 		// Did another module export this already?
-		for (auto it = exportedCalls.begin(), end = exportedCalls.end(); it != end; ++it)
+		const auto exported = exportedCalls.find(sysc.moduleName);
+		if (exported != exportedCalls.end())
 		{
-			if (!strcmp(it->moduleName, moduleName) && it->nid == nib)
+			const SyscallVector &syscalls = exported->second;
+			for (auto it = syscalls.begin(), end = syscalls.end(); it != end; ++it)
 			{
-				Memory::Write_U32(MIPS_MAKE_J(it->symAddr), address); // j symAddr
-				Memory::Write_U32(MIPS_MAKE_NOP(), address + 4); // nop (delay slot)
-				return;
+				if (it->nid == nib)
+				{
+					Memory::Write_U32(MIPS_MAKE_J(it->symAddr), address); // j symAddr
+					Memory::Write_U32(MIPS_MAKE_NOP(), address + 4); // nop (delay slot)
+					return;
+				}
 			}
 		}
 
 		// Module inexistent.. for now; let's store the syscall for it to be resolved later
 		INFO_LOG(HLE,"Syscall (%s,%08x) unresolved, storing for later resolving", moduleName, nib);
-		Syscall sysc = {"", address, nib};
-		strncpy(sysc.moduleName, moduleName, KERNELOBJECT_MAX_NAME_LENGTH);
-		sysc.moduleName[KERNELOBJECT_MAX_NAME_LENGTH] = '\0';
-		unresolvedSyscalls.push_back(sysc);
+		unresolvedSyscalls[sysc.moduleName].push_back(sysc);
 
 		// Write a trap so we notice this func if it's called before resolving.
 		Memory::Write_U32(MIPS_MAKE_JR_RA(), address); // jr ra
@@ -240,23 +258,28 @@ void ResolveSyscall(const char *moduleName, u32 nib, u32 address)
 {
 	_dbg_assert_msg_(HLE, moduleName != NULL, "Invalid module name.");
 
-	for (size_t i = 0; i < unresolvedSyscalls.size(); i++)
-	{
-		Syscall *sysc = &unresolvedSyscalls[i];
-		if (strncmp(sysc->moduleName, moduleName, 32) == 0 && sysc->nid == nib)
-		{
-			INFO_LOG(HLE,"Resolving %s/%08x",moduleName,nib);
-			// Note: doing that, we can't trace external module calls, so maybe something else should be done to debug more efficiently
-			// Note that this should be J not JAL, as otherwise control will return to the stub..
-			Memory::Write_U32(MIPS_MAKE_J(address), sysc->symAddr);
-			Memory::Write_U32(MIPS_MAKE_NOP(), sysc->symAddr + 4);
-		}
-	}
-
 	Syscall ex = {"", address, nib};
 	strncpy(ex.moduleName, moduleName, KERNELOBJECT_MAX_NAME_LENGTH);
 	ex.moduleName[KERNELOBJECT_MAX_NAME_LENGTH] = '\0';
-	exportedCalls.push_back(ex);
+	exportedCalls[ex.moduleName].push_back(ex);
+
+	const auto unresolved = unresolvedSyscalls.find(ex.moduleName);
+	if (unresolved != unresolvedSyscalls.end())
+	{
+		const SyscallVector &syscalls = unresolved->second;
+		for (size_t i = 0; i < syscalls.size(); i++)
+		{
+			const Syscall *sysc = &syscalls[i];
+			if (sysc->nid == nib)
+			{
+				INFO_LOG(HLE,"Resolving %s/%08x",moduleName,nib);
+				// Note: doing that, we can't trace external module calls, so maybe something else should be done to debug more efficiently
+				// Note that this should be J not JAL, as otherwise control will return to the stub..
+				Memory::Write_U32(MIPS_MAKE_J(address), sysc->symAddr);
+				Memory::Write_U32(MIPS_MAKE_NOP(), sysc->symAddr + 4);
+			}
+		}
+	}
 }
 
 const char *GetFuncName(int moduleIndex, int func)
@@ -264,7 +287,7 @@ const char *GetFuncName(int moduleIndex, int func)
 	if (moduleIndex >= 0 && moduleIndex < (int)moduleDB.size())
 	{
 		const HLEModule &module = moduleDB[moduleIndex];
-		if (func>=0 && func <= module.numFunctions)
+		if (func >= 0 && func < module.numFunctions)
 		{
 			return module.funcTable[func].name;
 		}
@@ -332,23 +355,38 @@ bool hleExecuteDebugBreak(const HLEFunction &func)
 
 u32 hleDelayResult(u32 result, const char *reason, int usec)
 {
-	CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, __KernelGetCurThread());
-	__KernelWaitCurThread(WAITTYPE_DELAY, 1, result, 0, false, reason);
+	if (__KernelIsDispatchEnabled())
+	{
+		CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, __KernelGetCurThread());
+		__KernelWaitCurThread(WAITTYPE_HLEDELAY, 1, result, 0, false, reason);
+	}
+	else
+		WARN_LOG(HLE, "Dispatch disabled, not delaying HLE result (right thing to do?)");
 	return result;
 }
 
 u64 hleDelayResult(u64 result, const char *reason, int usec)
 {
-	u64 param = (result & 0xFFFFFFFF00000000) | __KernelGetCurThread();
-	CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, param);
-	__KernelWaitCurThread(WAITTYPE_DELAY, 1, (u32) result, 0, false, reason);
+	if (__KernelIsDispatchEnabled())
+	{
+		u64 param = (result & 0xFFFFFFFF00000000) | __KernelGetCurThread();
+		CoreTiming::ScheduleEvent(usToCycles(usec), delayedResultEvent, param);
+		__KernelWaitCurThread(WAITTYPE_HLEDELAY, 1, (u32) result, 0, false, reason);
+	}
+	else
+		WARN_LOG(HLE, "Dispatch disabled, not delaying HLE result (right thing to do?)");
 	return result;
+}
+
+void hleEatCycles(int cycles)
+{
+	// Maybe this should Idle, at least for larger delays?  Could that cause issues?
+	currentMIPS->downcount -= cycles;
 }
 
 void hleEatMicro(int usec)
 {
-	// Maybe this should Idle, at least for larger delays?  Could that cause issues?
-	currentMIPS->downcount -= (int) usToCycles(usec);
+	hleEatCycles((int) usToCycles(usec));
 }
 
 inline void hleFinishSyscall(int modulenum, int funcnum)
@@ -420,9 +458,12 @@ inline void updateSyscallStats(int modulenum, int funcnum, double total)
 
 void CallSyscall(u32 op)
 {
+	double start = 0.0;  // need to initialize to fix the race condition where g_Config.bShowDebugStats is enabled in the middle of this func.
 	if (g_Config.bShowDebugStats)
+	{
 		time_update();
-	double start = time_now_d();
+		start = time_now_d();
+	}
 	u32 callno = (op >> 6) & 0xFFFFF; //20 bits
 	int funcnum = callno & 0xFFF;
 	int modulenum = (callno & 0xFF000) >> 12;
@@ -435,14 +476,24 @@ void CallSyscall(u32 op)
 	HLEFunc func = moduleDB[modulenum].funcTable[funcnum].func;
 	if (func)
 	{
-		func();
+		// TODO: Move to jit/interp.
+		u32 flags = moduleDB[modulenum].funcTable[funcnum].flags;
+		if (flags & HLE_NOT_DISPATCH_SUSPENDED)
+		{
+			if (!__KernelIsDispatchEnabled())
+				RETURN(SCE_KERNEL_ERROR_CAN_NOT_WAIT);
+			else
+				func();
+		}
+		else
+			func();
 
 		if (hleAfterSyscall != HLE_AFTER_NOTHING)
 			hleFinishSyscall(modulenum, funcnum);
 	}
 	else
 	{
-		ERROR_LOG(HLE,"Unimplemented HLE function %s", moduleDB[modulenum].funcTable[funcnum].name);
+		ERROR_LOG_REPORT(HLE, "Unimplemented HLE function %s", moduleDB[modulenum].funcTable[funcnum].name);
 	}
 	if (g_Config.bShowDebugStats)
 	{

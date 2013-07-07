@@ -17,7 +17,7 @@
 
 enum {
 	// Enough?
-	MAX_VERTS = 15000,
+	MAX_VERTS = 65536,
 };
 
 // #define USE_VBO
@@ -28,6 +28,7 @@ DrawBuffer::DrawBuffer() : count_(0), atlas(0) {
 	fontscaley = 1.0f;
 	inited_ = false;
 }
+
 DrawBuffer::~DrawBuffer() {
 	delete [] verts_;
 }
@@ -53,8 +54,9 @@ void DrawBuffer::GLLost() {
 	Init(false);
 }
 
-void DrawBuffer::Begin(DrawBufferMode dbmode) {
+void DrawBuffer::Begin(const GLSLProgram *program, DrawBufferMode dbmode) {
 	Init();
+	program_ = program;
 	count_ = 0;
 	mode_ = dbmode;
 }
@@ -63,7 +65,8 @@ void DrawBuffer::End() {
 	// Currently does nothing, but call it!
 }
 
-void DrawBuffer::Flush(const GLSLProgram *program, bool set_blend_state) {
+void DrawBuffer::Flush(bool set_blend_state) {
+	glsl_bind(program_);
 	if (count_ == 0)
 		return;
 #ifdef USE_VBO
@@ -74,22 +77,22 @@ void DrawBuffer::Flush(const GLSLProgram *program, bool set_blend_state) {
 		glstate.blend.enable();
 		glstate.blendFunc.set(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	}
-	glUniform1i(program->sampler0, 0);
-	glEnableVertexAttribArray(program->a_position);
-	glEnableVertexAttribArray(program->a_color);
-	if (program->a_texcoord0 != -1)
-		glEnableVertexAttribArray(program->a_texcoord0);
+	glUniform1i(program_->sampler0, 0);
+	glEnableVertexAttribArray(program_->a_position);
+	glEnableVertexAttribArray(program_->a_color);
+	if (program_->a_texcoord0 != -1)
+		glEnableVertexAttribArray(program_->a_texcoord0);
 	GL_CHECK();
-	glVertexAttribPointer(program->a_position, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, x));
-	glVertexAttribPointer(program->a_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, rgba));
-	if (program->a_texcoord0 != -1)
-		glVertexAttribPointer(program->a_texcoord0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, u));
+	glVertexAttribPointer(program_->a_position, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, x));
+	glVertexAttribPointer(program_->a_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)offsetof(Vertex, rgba));
+	if (program_->a_texcoord0 != -1)
+		glVertexAttribPointer(program_->a_texcoord0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)offsetof(Vertex, u));
 	glDrawArrays(mode_ == DBMODE_LINES ? GL_LINES : GL_TRIANGLES, 0, count_);
 	GL_CHECK();
-	glDisableVertexAttribArray(program->a_position);
-	glDisableVertexAttribArray(program->a_color);
-	if (program->a_texcoord0 != -1)
-		glDisableVertexAttribArray(program->a_texcoord0);
+	glDisableVertexAttribArray(program_->a_position);
+	glDisableVertexAttribArray(program_->a_color);
+	if (program_->a_texcoord0 != -1)
+		glDisableVertexAttribArray(program_->a_texcoord0);
 	GL_CHECK();
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 #else
@@ -98,28 +101,33 @@ void DrawBuffer::Flush(const GLSLProgram *program, bool set_blend_state) {
 		glstate.blendFunc.set(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	}
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glUniform1i(program->sampler0, 0);
-	glEnableVertexAttribArray(program->a_position);
-	glEnableVertexAttribArray(program->a_color);
-	if (program->a_texcoord0 != -1)
-		glEnableVertexAttribArray(program->a_texcoord0);
+	glUniform1i(program_->sampler0, 0);
+	glEnableVertexAttribArray(program_->a_position);
+	glEnableVertexAttribArray(program_->a_color);
+	if (program_->a_texcoord0 != -1)
+		glEnableVertexAttribArray(program_->a_texcoord0);
 	GL_CHECK();
-	glVertexAttribPointer(program->a_position, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)&verts_[0].x);
-	glVertexAttribPointer(program->a_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)&verts_[0].rgba);
-	if (program->a_texcoord0 != -1)
-		glVertexAttribPointer(program->a_texcoord0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)&verts_[0].u);
+	glVertexAttribPointer(program_->a_position, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)&verts_[0].x);
+	glVertexAttribPointer(program_->a_color, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void *)&verts_[0].rgba);
+	if (program_->a_texcoord0 != -1)
+		glVertexAttribPointer(program_->a_texcoord0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void *)&verts_[0].u);
 	glDrawArrays(mode_ == DBMODE_LINES ? GL_LINES : GL_TRIANGLES, 0, count_);
 	GL_CHECK();
-	glDisableVertexAttribArray(program->a_position);
-	glDisableVertexAttribArray(program->a_color);
-	if (program->a_texcoord0 != -1)
-		glDisableVertexAttribArray(program->a_texcoord0);
+	glDisableVertexAttribArray(program_->a_position);
+	glDisableVertexAttribArray(program_->a_color);
+	if (program_->a_texcoord0 != -1)
+		glDisableVertexAttribArray(program_->a_texcoord0);
 	GL_CHECK();
 #endif
 	count_ = 0;
 }
 
 void DrawBuffer::V(float x, float y, float z, uint32 color, float u, float v) {
+	if (count_ >= MAX_VERTS) {
+		FLOG("Overflowed the DrawBuffer");
+		return;
+	}
+
 	Vertex *vert = &verts_[count_++];
 	vert->x = x;
 	vert->y = y;
@@ -316,20 +324,28 @@ void DrawBuffer::DrawImage2GridH(int atlas_image, float x1, float y1, float x2, 
 
 void DrawBuffer::MeasureText(int font, const char *text, float *w, float *h) {
 	const AtlasFont &atlasfont = *atlas->fonts[font];
-	unsigned char cval;
+
+	unsigned int cval;
 	float wacc = 0;
+	float maxX = 0.0f;
 	int lines = 1;
-	while ((cval = *text++) != '\0') {
-		if (cval < 32) continue;
-		if (cval > 127) continue;
+	UTF8 utf(text);
+	while (true) {
+		if (utf.end())
+			break;
+		cval = utf.next();
 		if (cval == '\n') {
+			maxX = std::max(maxX, wacc);
 			wacc = 0;
 			lines++;
+			continue;
 		}
-		AtlasChar c = atlasfont.chars[cval - 32];
-		wacc += c.wx * fontscalex;
+		const AtlasChar *c = atlasfont.getChar(cval);
+		if (c) {
+			wacc += c->wx * fontscalex;
+		}
 	}
-	if (w) *w = wacc;
+	if (w) *w = std::max(wacc, maxX);
 	if (h) *h = atlasfont.height * fontscaley * lines;
 }
 
@@ -355,18 +371,32 @@ void DrawBuffer::DoAlign(int flags, float *x, float *y, float *w, float *h) {
 // U+3040–U+309F Hiragana
 // U+30A0–U+30FF Katakana
 
-
-// ROTATE_* doesn't yet work right.
-void DrawBuffer::DrawText(int font, const char *text, float x, float y, Color color, int flags) {
-	const AtlasFont &atlasfont = *atlas->fonts[font];
-	unsigned char cval;
-	float w, h;
-	MeasureText(font, text, &w, &h);
-	if (flags) {
-		DoAlign(flags, &x, &y, &w, &h);
+void DrawBuffer::DrawTextRect(int font, const char *text, float x, float y, float w, float h, Color color, int align) {
+	if (align & ALIGN_HCENTER) {
+		x += w / 2;
+	} else if (align & ALIGN_RIGHT) {
+		x += w;
+	}
+	if (align & ALIGN_VCENTER) {
+		y += h / 2;
+	} else if (align & ALIGN_BOTTOM) {
+		y += h;
 	}
 
-	if (flags & ROTATE_90DEG_LEFT) {
+	DrawText(font, text, x, y, color, align);
+}
+
+// ROTATE_* doesn't yet work right.
+void DrawBuffer::DrawText(int font, const char *text, float x, float y, Color color, int align) {
+	const AtlasFont &atlasfont = *atlas->fonts[font];
+	unsigned int cval;
+	float w, h;
+	MeasureText(font, text, &w, &h);
+	if (align) {
+		DoAlign(align, &x, &y, &w, &h);
+	}
+
+	if (align & ROTATE_90DEG_LEFT) {
 		x -= atlasfont.ascend*fontscaley;
 		// y += h;
 	}
@@ -383,31 +413,34 @@ void DrawBuffer::DrawText(int font, const char *text, float x, float y, Color co
 			x = sx;
 			continue;
 		}
-		if (cval < 32) continue;
-		if (cval > 127) continue;
-		AtlasChar c = atlasfont.chars[cval - 32];
-		float cx1, cy1, cx2, cy2;
-		if (flags & ROTATE_90DEG_LEFT) {
-			cy1 = y - c.ox * fontscalex;
-			cx1 = x + c.oy * fontscaley;
-			cy2 = y - (c.ox + c.pw) * fontscalex;
-			cx2 = x + (c.oy + c.ph) * fontscaley;
-		} else {
-			cx1 = x + c.ox * fontscalex;
-			cy1 = y + c.oy * fontscaley;
-			cx2 = x + (c.ox + c.pw) * fontscalex;
-			cy2 = y + (c.oy + c.ph) * fontscaley;
+		const AtlasChar *ch = atlasfont.getChar(cval);
+		if (!ch)
+			ch = atlasfont.getChar('?');
+		if (ch) {
+			const AtlasChar &c = *ch;
+			float cx1, cy1, cx2, cy2;
+			if (align & ROTATE_90DEG_LEFT) {
+				cy1 = y - c.ox * fontscalex;
+				cx1 = x + c.oy * fontscaley;
+				cy2 = y - (c.ox + c.pw) * fontscalex;
+				cx2 = x + (c.oy + c.ph) * fontscaley;
+			} else {
+				cx1 = x + c.ox * fontscalex;
+				cy1 = y + c.oy * fontscaley;
+				cx2 = x + (c.ox + c.pw) * fontscalex;
+				cy2 = y + (c.oy + c.ph) * fontscaley;
+			}
+			V(cx1,	cy1, color, c.sx, c.sy);
+			V(cx2,	cy1, color, c.ex, c.sy);
+			V(cx2,	cy2, color, c.ex, c.ey);
+			V(cx1,	cy1, color, c.sx, c.sy);
+			V(cx2,	cy2, color, c.ex, c.ey);
+			V(cx1,	cy2, color, c.sx, c.ey);
+			if (align & ROTATE_90DEG_LEFT)
+				y -= c.wx * fontscalex;
+			else
+				x += c.wx * fontscalex;
 		}
-		V(cx1,	cy1, color, c.sx, c.sy);
-		V(cx2,	cy1, color, c.ex, c.sy);
-		V(cx2,	cy2, color, c.ex, c.ey);
-		V(cx1,	cy1, color, c.sx, c.sy);
-		V(cx2,	cy2, color, c.ex, c.ey);
-		V(cx1,	cy2, color, c.sx, c.ey);
-		if (flags & ROTATE_90DEG_LEFT)
-			y -= c.wx * fontscalex;
-		else
-			x += c.wx * fontscalex;
 	}
 }
 
@@ -419,7 +452,7 @@ void DrawBuffer::EnableBlend(bool enable) {
 void DrawBuffer::SetClipRect(float x, float y, float w, float h)
 {
 	// Sigh, OpenGL is upside down.
-	glScissor(x, dp_yres - y, w, h);
+	glstate.scissorRect.set(x, dp_yres - y, w, h);
 	glstate.scissorTest.enable();
 }
 

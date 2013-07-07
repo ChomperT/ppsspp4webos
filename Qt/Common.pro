@@ -36,15 +36,16 @@ SOURCES += ../Common/ColorUtil.cpp \
 	../Common/FileSearch.cpp \
 	../Common/FileUtil.cpp \
 	../Common/Hash.cpp \
-	../Common/IniFile.cpp \
 	../Common/LogManager.cpp \
+	../Common/KeyMap.cpp \
 	../Common/MathUtil.cpp \
 	../Common/MemArena.cpp \
 	../Common/MemoryUtil.cpp \
 	../Common/Misc.cpp \
 	../Common/MsgHandler.cpp \
-	../Common/StringUtil.cpp \
+	../Common/StringUtils.cpp \
 	../Common/Thread.cpp \
+	../Common/ThreadPools.cpp \
 	../Common/Timer.cpp \
 	../Common/Version.cpp \
 	../Common/Crypto/*.cpp
@@ -55,14 +56,17 @@ HEADERS += ../Common/ChunkFile.h \
 	../Common/FileSearch.h \
 	../Common/FileUtil.h \
 	../Common/Hash.h \
-	../Common/IniFile.h \
 	../Common/LogManager.h \
+	../Common/KeyMap.h \
 	../Common/MathUtil.h \
 	../Common/MemArena.h \
 	../Common/MemoryUtil.h \
 	../Common/MsgHandler.h \
-	../Common/StringUtil.h \
+	../Common/StringUtils.h \
 	../Common/Thread.h \
+	../Common/ThreadPools.h \
 	../Common/Timer.h \
 	../Common/Crypto/*.h
+
+INCLUDEPATH += ../native
 

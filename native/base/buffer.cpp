@@ -36,6 +36,12 @@ void Buffer::Append(const char *str) {
   memcpy(dest, str, len);
 }
 
+void Buffer::Append(const Buffer &other) {
+	size_t len = other.size();
+	char *dest = Append(len);
+	memcpy(dest, &other.data_[0], len);
+}
+
 void Buffer::AppendValue(int value) {
   char buf[16];
   // This is slow.
@@ -44,10 +50,15 @@ void Buffer::AppendValue(int value) {
 }
 
 void Buffer::Take(size_t length, std::string *dest) {
-  CHECK_LE(length, data_.size());
-  dest->resize(length);
-  memcpy(&(*dest)[0], &data_[0], length);
-  data_.erase(data_.begin(), data_.begin() + length);
+	if (length > data_.size()) {
+		ELOG("Truncating length in Buffer::Take()");
+		length = data_.size();
+	}
+	dest->resize(length);
+	if (length > 0) {
+		memcpy(&(*dest)[0], &data_[0], length);
+		data_.erase(data_.begin(), data_.begin() + length);
+	}
 }
 
 int Buffer::TakeLineCRLF(std::string *dest) {
@@ -62,7 +73,11 @@ int Buffer::TakeLineCRLF(std::string *dest) {
 }
 
 void Buffer::Skip(size_t length) {
-  data_.erase(data_.begin(), data_.begin() + length);
+	if (length > data_.size()) {
+		ELOG("Truncating length in Buffer::Skip()");
+		length = data_.size();
+	}
+	data_.erase(data_.begin(), data_.begin() + length);
 }
 
 int Buffer::SkipLineCRLF() {
@@ -76,7 +91,7 @@ int Buffer::SkipLineCRLF() {
 }
 
 int Buffer::OffsetToAfterNextCRLF() {
-  for (size_t i = 0; i < data_.size() - 1; i++) {
+  for (int i = 0; i < (int)data_.size() - 1; i++) {
     if (data_[i] == '\r' && data_[i + 1] == '\n') {
       return i + 2;
     }
@@ -85,18 +100,19 @@ int Buffer::OffsetToAfterNextCRLF() {
 }
 
 void Buffer::Printf(const char *fmt, ...) {
-  char buffer[512];
+  char buffer[2048];
   va_list vl;
   va_start(vl, fmt);
   ssize_t retval = vsnprintf(buffer, sizeof(buffer), fmt, vl);
   if (retval >= (ssize_t)sizeof(buffer)) {
     // Output was truncated. TODO: Do something.
-    FLOG("Buffer::Printf truncated output");
+    ELOG("Buffer::Printf truncated output");
   }
-  CHECK_GE(retval, 0);
+  if (retval < 0) {
+    ELOG("Buffer::Printf failed");
+  }
   va_end(vl);
   char *ptr = Append(retval);
-  CHECK(ptr);
   memcpy(ptr, buffer, retval);
 }
 
@@ -107,6 +123,17 @@ bool Buffer::Flush(int fd) {
     data_.resize(0);
   }
   return success;
+}
+
+bool Buffer::FlushToFile(const char *filename) {
+	FILE *f = fopen(filename, "wb");
+	if (!f)
+		return false;
+	if (data_.size()) {
+		fwrite(&data_[0], 1, data_.size(), f);
+	}
+	fclose(f);
+	return true;
 }
 
 bool Buffer::FlushSocket(uintptr_t sock) {
@@ -132,28 +159,38 @@ bool Buffer::FlushSocket(uintptr_t sock) {
   return true;
 }
 
-void Buffer::ReadAll(int fd) {
-  char buf[1024];
-  int retval;
-  while ((retval = recv(fd, buf, sizeof(buf), 0)) > 0) {
-    char *p = Append((size_t)retval);
-    memcpy(p, buf, retval);
-  }
+bool Buffer::ReadAll(int fd) {
+	char buf[1024];
+	while (true) {
+		int retval = recv(fd, buf, sizeof(buf), 0);
+		if (retval == 0)
+			return true;
+		else if (retval < 0) {
+			ELOG("Error reading from buffer: %i", retval);
+			return false;
+		}
+		char *p = Append((size_t)retval);
+		memcpy(p, buf, retval);
+	}
+	return true;
 }
 
-void Buffer::Read(int fd, size_t sz) {
-  char buf[1024];
-  int retval;
-  while ((retval = recv(fd, buf, std::min(sz, sizeof(buf)), 0)) > 0) {
-    char *p = Append((size_t)retval);
-    memcpy(p, buf, retval);
-    sz -= retval;
-    if (sz == 0)
-      break;
-  }
+size_t Buffer::Read(int fd, size_t sz) {
+	char buf[1024];
+	int retval;
+	size_t received = 0;
+	while ((retval = recv(fd, buf, std::min(sz, sizeof(buf)), 0)) > 0) {
+		char *p = Append((size_t)retval);
+		memcpy(p, buf, retval);
+		sz -= retval;
+		received += retval;
+		if (sz == 0)
+			return 0;
+	}
+	return received;
 }
 
 void Buffer::PeekAll(std::string *dest) {
-  dest->resize(data_.size());
-  memcpy(&(*dest)[0], &data_[0], data_.size());
+	dest->resize(data_.size());
+	memcpy(&(*dest)[0], &data_[0], data_.size());
 }

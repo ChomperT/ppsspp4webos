@@ -18,3 +18,16 @@ const AtlasImage *Atlas::getImageByName(const char *name) const
 	}
 	return 0;
 }
+
+const AtlasChar *AtlasFont::getChar(int utf32) const {
+	for (int i = 0; i < numRanges; i++) {
+		if (utf32 >= ranges[i].start && utf32 < ranges[i].end) {
+			const AtlasChar *c = &charData[ranges[i].start_index + utf32 - ranges[i].start];
+			if (c->ex == 0 && c->ey == 0)
+				return 0;
+			else
+				return c;
+		}
+	}
+	return 0;
+}

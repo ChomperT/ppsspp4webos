@@ -264,6 +264,12 @@ namespace MIPSAnalyst
 
 	map<u32, Function*> hashToFunction;
 
+	void Shutdown()
+	{
+		functions.clear();
+		hashToFunction.clear();
+	}
+
 	// hm pointless :P
 	void UpdateHashToFunctionMap()
 	{
@@ -317,7 +323,7 @@ namespace MIPSAnalyst
 		{
 			Function &f=*iter;
 			u32 hash = 0x1337babe;
-			for (u32 addr = f.start; addr <= f.end; addr++)
+			for (u32 addr = f.start; addr <= f.end; addr += 4)
 			{
 				u32 validbits = 0xFFFFFFFF;
 				u32 instr = Memory::Read_Instruction(addr);
@@ -326,7 +332,7 @@ namespace MIPSAnalyst
 					validbits&=~0xFFFF;
 				if (flags & IN_IMM26)
 					validbits&=~0x3FFFFFF;
-				hash = _rotl(hash,13);
+				hash = __rotl(hash,13);
 				hash ^= (instr&validbits);
 			}
 			f.hash=hash;
@@ -345,15 +351,15 @@ namespace MIPSAnalyst
 		u32 addr;
 		for (addr = startAddr; addr<=endAddr; addr+=4)
 		{
-			int n = symbolMap.GetSymbolNum(addr,ST_FUNCTION);
-			if (n != -1)
+			SymbolInfo syminfo;
+			if (symbolMap.GetSymbolInfo(&syminfo, addr, ST_FUNCTION))
 			{
-				addr = symbolMap.GetSymbolAddr(n) + symbolMap.GetSymbolSize(n);
+				addr = syminfo.address + syminfo.size;
 				continue;
 			}
 
 			u32 op = Memory::Read_Instruction(addr);
-			u32 target = GetBranchTarget(addr);
+			u32 target = GetBranchTargetNoRA(addr);
 			if (target != INVALIDTARGET)
 			{
 				isStraightLeaf = false;

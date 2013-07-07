@@ -38,25 +38,21 @@ public:
 	virtual void InitClear();
 	virtual void PreExecuteOp(u32 op, u32 diff);
 	virtual void ExecuteOp(u32 op, u32 diff);
-	virtual void DrawSync(int mode);
-	virtual void Continue();
-	virtual void Break();
-	virtual void EnableInterrupts(bool enable) {
-		interruptsEnabled_ = enable;
-	}
+	virtual u32  DrawSync(int mode);
 
 	virtual void SetDisplayFramebuffer(u32 framebuf, u32 stride, int format);
 	virtual void CopyDisplayToOutput();
 	virtual void BeginFrame();
 	virtual void UpdateStats();
-	virtual void InvalidateCache(u32 addr, int size);
-	virtual void InvalidateCacheHint(u32 addr, int size);
+	virtual void InvalidateCache(u32 addr, int size, GPUInvalidationType type);
+	virtual void UpdateMemory(u32 dest, u32 src, int size);
+	virtual void ClearCacheNextFrame();
 	virtual void DeviceLost();  // Only happens on Android. Drop all textures and shaders.
 
 	virtual void DumpNextFrame();
 	virtual void Flush();
 	virtual void DoState(PointerWrap &p);
-
+	
 	// Called by the window system if the window size changed. This will be reflected in PSPCoreParam.pixel*.
 	virtual void Resized();
 	virtual bool DecodeTexture(u8* dest, GPUgstate state)
@@ -65,15 +61,20 @@ public:
 	}
 	virtual bool FramebufferDirty();
 
+	virtual void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) {
+		primaryInfo = reportingPrimaryInfo_;
+		fullInfo = reportingFullInfo_;
+	}
 	std::vector<FramebufferInfo> GetFramebufferList();
+
+protected:
+	virtual void FastRunLoop(DisplayList &list);
 
 private:
 	void DoBlockTransfer();
 	void ApplyDrawState(int prim);
-
-	// Applies states for debugging if enabled.
-	void BeginDebugDraw();
-	void EndDebugDraw();
+	void CheckFlushOp(u32 op, u32 diff);
+	void BuildReportingInfo();
 
 	FramebufferManager framebufferManager_;
 	TextureCache textureCache_;
@@ -81,6 +82,9 @@ private:
 	ShaderManager *shaderManager_;
 
 	u8 *flushBeforeCommand_;
-	bool interruptsEnabled_;
 	bool resized_;
+	int lastVsync_;
+
+	std::string reportingPrimaryInfo_;
+	std::string reportingFullInfo_;
 };

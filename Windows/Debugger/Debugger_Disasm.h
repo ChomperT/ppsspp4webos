@@ -5,24 +5,43 @@
 
 #include "../W32Util/DialogManager.h"
 #include "CtrlDisasmView.h"
-#include "../../Core/MIPS/MIPSDebugInterface.h"
 #include "CPURegsInterface.h"
-#include "../../Globals.h"
-#include "../../Core/CPU.h"
+#include "Globals.h"
+#include "Core/CPU.h"
+#include "Core/MIPS/MIPSDebugInterface.h"
+#include "Core/Debugger/Breakpoints.h"
+#include <vector>
 
 #include <windows.h>
+
+class CtrlThreadList;
 
 class CDisasm : public Dialog
 {
 private:
-	RECT minRect;
+	RECT defaultRect;
+	RECT defaultBreakpointRect;
 	RECT regRect;
 	RECT disRect;
-	
-	DebugInterface *cpu;
-	
-	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam);
+	RECT breakpointRect;
 
+	DebugInterface *cpu;
+	u64 lastTicks;
+
+	CtrlThreadList* threadList;
+	std::vector<BreakPoint> displayedBreakPoints_;
+	std::vector<MemCheck> displayedMemChecks_;
+
+	BOOL DlgProc(UINT message, WPARAM wParam, LPARAM lParam);
+	void UpdateSize(WORD width, WORD height);
+	void SavePosition();
+	void updateBreakpointList();
+	void handleBreakpointNotify(LPARAM lParam);
+	void gotoBreakpointAddress(int itemIndex);
+	void removeBreakpoint(int itemIndex);
+	int getTotalBreakpointCount();
+	int getBreakpointIndex(int itemIndex, bool& isMemory);
+	void updateThreadLabel(bool clear);
 public:
 	int index; //helper 
 
@@ -31,7 +50,12 @@ public:
 	//
 	// --- tools ---
 	//
-	// Update Dialog
+	
+	virtual void Update()
+	{
+		UpdateDialog(true);
+		updateBreakpointList();
+	};
 	void UpdateDialog(bool _bComplete = false);
 	// SetDebugMode 
 	void SetDebugMode(bool _bDebug);

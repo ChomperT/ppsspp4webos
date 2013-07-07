@@ -2,11 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if !defined(USING_GLES2)
+#include "ext/rg_etc1/rg_etc1.h"
 #include "image/png_load.h"
-#include "ext/etcpack/etcdec.h"
-#endif
-
 #include "image/zim_load.h"
 #include "base/logging.h"
 #include "gfx/texture.h"
@@ -14,8 +11,10 @@
 #include "gfx/gl_debug_log.h"
 #include "gfx/gl_lost_manager.h"
 #include "gfx/gl_common.h"
+#include "gfx_es2/gl_state.h"
 
 Texture::Texture() : id_(0) {
+	CheckGLExtensions();
 	register_gl_resource_holder(this);
 }
 
@@ -65,7 +64,6 @@ bool Texture::Load(const char *filename) {
 		glGenTextures(1, &id_);
 		glBindTexture(GL_TEXTURE_2D, id_);
 		if (bpp == 1) {
-
 #if defined(USING_GLES2)
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, data);
 #else
@@ -87,7 +85,7 @@ bool Texture::Load(const char *filename) {
 	// Currently here are a bunch of project-specific workarounds.
 	// They shouldn't really hurt anything else very much though.
 
-	int len = strlen(filename);
+	size_t len = strlen(filename);
 	char fn[1024];
 	strncpy(fn, filename, sizeof(fn));
 	fn[1023] = 0;
@@ -109,21 +107,20 @@ bool Texture::Load(const char *filename) {
 	const char *name = fn;
 	if (zim && 0==memcmp(name, "Media/textures/", strlen("Media/textures"))) name += strlen("Media/textures/");
 	len = strlen(name);
-#if !defined(USING_GLES2)
 	if (!strcmp("png", &name[len-3]) ||
 		!strcmp("PNG", &name[len-3])) {
 			if (!LoadPNG(fn)) {
+				WLOG("WARNING: Failed to load .png %s, falling back to ugly gray XOR pattern!", fn);
 				LoadXOR();
 				return false;
 			} else {
 				return true;
 			}
-	} else
-#endif
-	if (!strcmp("zim", &name[len-3])) {
+	} else if (!strcmp("zim", &name[len-3])) {
 		if (LoadZIM(name)) {
 			return true;
 		} else {
+			WLOG("WARNING: Failed to load .zim texture %s, falling back to ugly gray XOR pattern!", fn);
 			LoadXOR();
 			return false;
 		}
@@ -132,7 +129,6 @@ bool Texture::Load(const char *filename) {
 	return false;
 }
 
-#if !defined(USING_GLES2)
 bool Texture::LoadPNG(const char *filename) {
 	unsigned char *image_data;
 	if (1 != pngLoad(filename, &width_, &height_, &image_data, false)) {
@@ -144,12 +140,43 @@ bool Texture::LoadPNG(const char *filename) {
 	SetTextureParameters(ZIM_GEN_MIPS);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width_, height_, 0, 
 		GL_RGBA, GL_UNSIGNED_BYTE, image_data);
-	glGenerateMipmap(GL_TEXTURE_2D);
+	if(gl_extensions.FBO_ARB){
+		glGenerateMipmap(GL_TEXTURE_2D);
+	}else{
+#ifndef USING_GLES2
+		glGenerateMipmapEXT(GL_TEXTURE_2D);
+#endif
+	}
 	GL_CHECK();
 	free(image_data);
 	return true;
 }
+
+bool Texture::LoadPNG(const uint8_t *data, size_t size, bool genMips) {
+	unsigned char *image_data;
+	if (1 != pngLoadPtr(data, size, &width_, &height_, &image_data, false)) {
+		return false;
+	}
+	GL_CHECK();
+	// TODO: should check for power of 2 tex size and disallow genMips when not.
+	glGenTextures(1, &id_);
+	glBindTexture(GL_TEXTURE_2D, id_);
+	SetTextureParameters(genMips ? ZIM_GEN_MIPS : ZIM_CLAMP);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width_, height_, 0, 
+		GL_RGBA, GL_UNSIGNED_BYTE, image_data);
+	if (genMips) { 
+		if(gl_extensions.FBO_ARB) {
+			glGenerateMipmap(GL_TEXTURE_2D);
+		}else{
+#ifndef USING_GLES2
+			glGenerateMipmapEXT(GL_TEXTURE_2D);
 #endif
+		}
+	}
+	GL_CHECK();
+	free(image_data);
+	return true;
+}
 
 bool Texture::LoadXOR() {
 	width_ = height_ = 256;
@@ -168,7 +195,13 @@ bool Texture::LoadXOR() {
 	SetTextureParameters(ZIM_GEN_MIPS);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width_, height_, 0,
 		GL_RGBA, GL_UNSIGNED_BYTE, buf);
-	glGenerateMipmap(GL_TEXTURE_2D);
+	if(gl_extensions.FBO_ARB){
+		glGenerateMipmap(GL_TEXTURE_2D);
+	}else{
+#ifndef USING_GLES2
+		glGenerateMipmapEXT(GL_TEXTURE_2D);
+#endif
+	}
 	GL_CHECK();
 	delete [] buf;
 	return true;
@@ -183,8 +216,8 @@ uint8_t *ETC1ToRGBA(uint8_t *etc1, int width, int height) {
 	memset(rgba, 0xFF, width * height * 4);
 	for (int y = 0; y < height; y += 4) {
 		for (int x = 0; x < width; x += 4) {
-			DecompressBlock(etc1 + ((y / 4) * width/4 + (x / 4)) * 8,
-				rgba + (y * width + x) * 4, width, 255);
+			rg_etc1::unpack_etc1_block(etc1 + ((y / 4) * width/4 + (x / 4)) * 8,
+				(uint32_t *)rgba + (y * width + x), width, false);
 		}
 	}
 	return rgba;
@@ -246,6 +279,7 @@ bool Texture::LoadZIM(const char *filename) {
 			glCompressedTexImage2D(GL_TEXTURE_2D, l, GL_ETC1_RGB8_OES, width[l], height[l], 0, compressed_image_bytes, image_data[l]);
 			GL_CHECK();
 #else
+			// TODO: OpenGL 4.3+ accepts ETC1 so we should not have to do this anymore on those cards.
 			image_data[l] = ETC1ToRGBA(image_data[l], data_w, data_h);
 			glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, width[l], height[l], 0,
 				GL_RGBA, GL_UNSIGNED_BYTE, image_data[l]);
@@ -261,7 +295,13 @@ bool Texture::LoadZIM(const char *filename) {
 				colors, data_type, image_data[l]);
 		}
 		if (num_levels == 1 && (flags & ZIM_GEN_MIPS)) {
-			glGenerateMipmap(GL_TEXTURE_2D);
+			if(gl_extensions.FBO_ARB) {
+				glGenerateMipmap(GL_TEXTURE_2D);
+			}else{
+#ifndef USING_GLES2
+				glGenerateMipmapEXT(GL_TEXTURE_2D);
+#endif
+			}
 		}
 	}
 	SetTextureParameters(flags);
@@ -277,5 +317,13 @@ void Texture::Bind(int stage) {
 	if (stage != -1)
 		glActiveTexture(GL_TEXTURE0 + stage);
 	glBindTexture(GL_TEXTURE_2D, id_);
+	GL_CHECK();
+}
+
+void Texture::Unbind(int stage) {
+	GL_CHECK();
+	if (stage != -1)
+		glActiveTexture(GL_TEXTURE0 + stage);
+	glBindTexture(GL_TEXTURE_2D, 0);
 	GL_CHECK();
 }

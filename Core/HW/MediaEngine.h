@@ -28,70 +28,87 @@
 #include "../../Globals.h"
 #include "../HLE/sceMpeg.h"
 #include "ChunkFile.h"
+#include "Core/HW/MpegDemux.h"
+
+struct SwsContext;
+struct AVFrame;
+struct AVIOContext;
+struct AVFormatContext;
+struct AVCodecContext;
+
+inline s64 getMpegTimeStamp(u8* buf) {
+	return (s64)buf[5] | ((s64)buf[4] << 8) | ((s64)buf[3] << 16) | ((s64)buf[2] << 24) 
+		| ((s64)buf[1] << 32) | ((s64)buf[0] << 36);
+}
 
 class MediaEngine
 {
 public:
-	MediaEngine() : fakeMode_(false), readLength_(0), fakeFrameCounter_(0) {}
+	MediaEngine();
+	~MediaEngine();
 
-	void setFakeMode(bool fake) {
-		fakeMode_ = fake;
-	}
+	void closeMedia();
+	bool loadStream(u8* buffer, int readSize, int RingbufferSize);
+	// open the mpeg context
+	bool openContext();
+	// Returns number of packets actually added.
+	int addStreamData(u8* buffer, int addSize);
 
-	void init(u32 bufferAddr, u32 mpegStreamSize, u32 mpegOffset) {
-		bufferAddr_ = bufferAddr;
-		mpegStreamSize_ = mpegStreamSize;
-		mpegOffset_ = mpegOffset;
-	}
-	void finish();
+	void setVideoStream(int streamNum) { m_videoStream = streamNum; }
+	void setAudioStream(int streamNum) { m_audioStream = streamNum; }
 
-	void setVideoDim(int w, int h) { videoWidth_ = w; videoHeight_ = h; }
-	void feedPacketData(u32 addr, int size);
+	int getRemainSize();
 
-	bool readVideoAu(SceMpegAu *au) {
-		if (fakeMode_) {
-			au->pts += videoTimestampStep;
-		}
-		return true;
-	}
-	bool readAudioAu(SceMpegAu *au) {
-		if (fakeMode_) {
+	bool stepVideo(int videoPixelMode);
+	int writeVideoImage(u8* buffer, int frameWidth = 512, int videoPixelMode = 3);
+	int writeVideoImageWithRange(u8* buffer, int frameWidth, int videoPixelMode, 
+	                             int xpos, int ypos, int width, int height);
+	int getAudioSamples(u8* buffer);
 
-		}
-		return true;
-	}
+	bool setVideoDim(int width = 0, int height = 0);
+	s64 getVideoTimeStamp();
+	s64 getAudioTimeStamp();
+	s64 getLastTimeStamp();
 
-	bool stepVideo() {
-		if (fakeMode_)
-			return true;
-		return true;
-	}
+	bool IsVideoEnd() { return m_isVideoEnd; }
+	bool IsNoAudioData() { return m_noAudioData; }
 
-	void writeVideoImage(u32 bufferPtr, int frameWidth, int videoPixelMode);
-
-	// WTF is this?
-	int readLength() { return readLength_; }
-	void setReadLength(int len) { readLength_ = len; }
-
-	void DoState(PointerWrap &p) {
-		p.Do(fakeMode_);
-		p.Do(bufferAddr_);
-		p.Do(mpegStreamSize_);
-		p.Do(mpegOffset_);
-		p.Do(readLength_);
-		p.Do(videoWidth_);
-		p.Do(videoHeight_);
-		p.Do(fakeFrameCounter_);
-		p.DoMarker("MediaEngine");
-	}
+	void DoState(PointerWrap &p);
 
 private:
-	bool fakeMode_;
-	u32 bufferAddr_;
-	u32 mpegStreamSize_;
-	u32 mpegOffset_;
-	int readLength_;
-	int videoWidth_;
-	int videoHeight_;
-	int fakeFrameCounter_;
+	void updateSwsFormat(int videoPixelMode);
+
+public:
+
+	AVFormatContext *m_pFormatCtx;
+	AVCodecContext *m_pCodecCtx;
+	AVFrame *m_pFrame;
+	AVFrame *m_pFrameRGB;
+	AVIOContext *m_pIOContext;
+	SwsContext *m_sws_ctx;
+	int m_sws_fmt;
+	u8 *m_buffer;
+	int m_videoStream;
+	int m_audioStream;
+
+	int  m_desWidth;
+	int  m_desHeight;
+	int m_decodingsize;
+	int m_bufSize;
+	s64 m_videopts;
+	Atrac3plus_Decoder::BufferQueue *m_pdata;
+	
+	MpegDemux *m_demux;
+	void* m_audioContext;
+	s64 m_audiopts;
+
+	s64 m_firstTimeStamp;
+	s64 m_lastTimeStamp;
+
+	bool m_isVideoEnd;
+	bool m_noAudioData;
+
+	int m_ringbuffersize;
+	u8 m_mpegheader[0x10000];
+	int m_mpegheaderReadPos;
 };

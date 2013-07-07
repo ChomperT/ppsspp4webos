@@ -2,34 +2,39 @@
 
 #include "HLE.h"
 
-int sceNpDrmSetLicenseeKey()
+u32 sceIoIoctl(u32 id, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen);
+
+int sceNpDrmSetLicenseeKey(u32 npDrmKeyAddr)
 {
-	ERROR_LOG(HLE, "UNIMPL sceNpDrmSetLicenseeKey");
+	INFO_LOG(HLE, "call sceNpDrmSetLicenseeKey(%08x)", npDrmKeyAddr);
 	return 0;
 }
 
 int sceNpDrmClearLicenseeKey()
 {
-	ERROR_LOG(HLE, "UNIMPL sceNpDrmClearLicenseeKey");
+	INFO_LOG(HLE, "call sceNpDrmClearLicenseeKey()");
 	return 0;
 }
 
-int sceNpDrmRenameCheck()
+int sceNpDrmRenameCheck(const char *filename)
 {
-	ERROR_LOG(HLE, "UNIMPL sceNpDrmRenameCheck");
+	INFO_LOG(HLE, "call sceNpDrmRenameCheck(%s)", filename);
 	return 0;
 }
 
 int sceNpDrmEdataSetupKey(u32 edataFd)
 {
-	ERROR_LOG(HLE, "UNIMPL sceNpDrmEdataSetupKey %x", edataFd);
-	return 0;
+	INFO_LOG(HLE, "call sceNpDrmEdataSetupKey %x", edataFd);
+	/* set PGD offset */
+	sceIoIoctl(edataFd, 0x04100002, 0x90, 0, 0, 0);
+	/* call PGD open */
+	return sceIoIoctl(edataFd, 0x04100001, 0, 0, 0, 0);
 }
 
 int sceNpDrmEdataGetDataSize(u32 edataFd)
 {
-	ERROR_LOG(HLE, "UNIMPL sceNpDrmEdataGetDataSize %x", edataFd);
-	return 0;
+	INFO_LOG(HLE, "call sceNpDrmEdataGetDataSize %x", edataFd);
+	return sceIoIoctl(edataFd, 0x04100010, 0, 0, 0, 0);
 }
 
 int sceNpDrmOpen()
@@ -38,28 +43,14 @@ int sceNpDrmOpen()
 	return 0;
 }
 
-int sceKernelLoadModuleNpDrm()
-{
-	ERROR_LOG(HLE, "UNIMPL sceKernelLoadModuleNpDrm");
-	return 0;
-}
-
-int sceKernelLoadExecNpDrm()
-{
-	ERROR_LOG(HLE, "UNIMPL sceKernelLoadExecNpDrm");
-	return 0;
-}
-
 const HLEFunction sceNpDrm[] =
 { 
-	{0xA1336091, 0, "sceNpDrmSetLicenseeKey"},
-	{0x9B745542, 0, "sceNpDrmClearLicenseeKey"},
-	{0x275987D1, 0, "sceNpDrmRenameCheck"},
+	{0xA1336091, WrapI_U<sceNpDrmSetLicenseeKey>, "sceNpDrmSetLicenseeKey"},
+	{0x9B745542, WrapI_V<sceNpDrmClearLicenseeKey>, "sceNpDrmClearLicenseeKey"},
+	{0x275987D1, WrapI_C<sceNpDrmRenameCheck>, "sceNpDrmRenameCheck"},
 	{0x08d98894, WrapI_U<sceNpDrmEdataSetupKey>, "sceNpDrmEdataSetupKey"},
 	{0x219EF5CC, WrapI_U<sceNpDrmEdataGetDataSize>, "sceNpDrmEdataGetDataSize"},
 	{0x2BAA4294, 0, "sceNpDrmOpen"},
-	{0xC618D0B1, 0, "sceKernelLoadModuleNpDrm"},
-	{0xAA5FC85B, 0, "sceKernelLoadExecNpDrm"},
 };
 
 void Register_sceNpDrm()

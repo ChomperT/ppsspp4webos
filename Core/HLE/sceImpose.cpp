@@ -18,37 +18,26 @@
 #include "HLE.h"
 #include "FunctionWrappers.h"
 #include "../MIPS/MIPS.h"
+#include "../Config.h"
 #include "ChunkFile.h"
-
-
-const int PSP_LANGUAGE_JAPANESE = 0;
-const int PSP_LANGUAGE_ENGLISH = 1;
-const int PSP_LANGUAGE_FRENCH = 2;
-const int PSP_LANGUAGE_SPANISH = 3;
-const int PSP_LANGUAGE_GERMAN = 4;
-const int PSP_LANGUAGE_ITALIAN = 5;
-const int PSP_LANGUAGE_DUTCH = 6;
-const int PSP_LANGUAGE_PORTUGUESE = 7;
-const int PSP_LANGUAGE_RUSSIAN = 8;
-const int PSP_LANGUAGE_KOREAN = 9;
-const int PSP_LANGUAGE_TRADITIONAL_CHINESE = 10;
-const int PSP_LANGUAGE_SIMPLIFIED_CHINESE = 11;
-
-const int PSP_CONFIRM_BUTTON_CIRCLE = 0;
-const int PSP_CONFIRM_BUTTON_CROSS = 1;
+#include "sceUtility.h"
 
 const int PSP_UMD_POPUP_DISABLE = 0;
 const int PSP_UMD_POPUP_ENABLE = 1;
 
-static u32 language = PSP_LANGUAGE_ENGLISH;
-static u32 buttonValue = PSP_CONFIRM_BUTTON_CIRCLE;
+#define	PSP_IMPOSE_BATTICON_NONE		0x80000000
+#define	PSP_IMPOSE_BATTICON_VISIBLE		0x00000000
+#define	PSP_IMPOSE_BATTICON_BLINK		0x00000001
+
+static u32 language = PSP_SYSTEMPARAM_LANGUAGE_ENGLISH;
+static u32 buttonValue = PSP_SYSTEMPARAM_BUTTON_CIRCLE;
 static u32 umdPopup = PSP_UMD_POPUP_DISABLE;
 static u32 backlightOffTime;
 
 void __ImposeInit()
 {
-	language = PSP_LANGUAGE_ENGLISH;
-	buttonValue = PSP_CONFIRM_BUTTON_CIRCLE;
+	language = g_Config.ilanguage;
+	buttonValue = g_Config.iButtonPreference;
 	umdPopup = PSP_UMD_POPUP_DISABLE;
 	backlightOffTime = 0;
 }
@@ -66,7 +55,7 @@ u32 sceImposeGetBatteryIconStatus(u32 chargingPtr, u32 iconStatusPtr)
 {
 	DEBUG_LOG(HLE, "sceImposeGetBatteryIconStatus(%08x, %08x)", chargingPtr, iconStatusPtr);
 	if (Memory::IsValidAddress(chargingPtr))
-		Memory::Write_U32(1, chargingPtr);
+		Memory::Write_U32(PSP_IMPOSE_BATTICON_NONE, chargingPtr);
 	if (Memory::IsValidAddress(iconStatusPtr))
 		Memory::Write_U32(3, iconStatusPtr);
 	return 0;

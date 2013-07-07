@@ -2,11 +2,16 @@
 
 #include <windows.h>
 #include <tchar.h>
+
+#include <map>
+
+#include "base/NativeApp.h"
 #include "Globals.h"
 
 #include "shellapi.h"
 #include "commctrl.h"
 
+#include "input/input_state.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Windows/OpenGLBase.h"
 #include "Windows/Debugger/Debugger_Disasm.h"
@@ -23,6 +28,7 @@
 #include "resource.h"
 
 #include "Windows/WndMainWindow.h"
+#include "Windows/WindowsHost.h"
 #include "Common/LogManager.h"
 #include "Common/ConsoleListener.h"
 #include "Windows/W32Util/DialogManager.h"
@@ -30,49 +36,75 @@
 #include "Windows/W32Util/Misc.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
+#include "native/image/png_load.h"
+#include "GPU/GLES/TextureScaler.h"
+#include "ControlMapping.h"
+#include "UI/OnScreenDisplay.h"
+#include "i18n/i18n.h"
 
 #ifdef THEMES
 #include "XPTheme.h"
 #endif
 
+#define ENABLE_TOUCH 0
+
+extern std::map<int, int> windowsTransTable;
 BOOL g_bFullScreen = FALSE;
-RECT g_normalRC = {0};
+static RECT g_normalRC = {0};
+extern bool g_TakeScreenshot;
+extern InputState input_state;
+extern const char * getVirtualKeyName(unsigned char key);
+extern const char * getXinputButtonName(unsigned int button);
+
+#define TIMER_CURSORUPDATE 1
+#define TIMER_CURSORMOVEUPDATE 2
+#define CURSORUPDATE_INTERVAL_MS 50
+#define CURSORUPDATE_MOVE_TIMESPAN_MS 500
 
 namespace MainWindow
 {
 	HWND hwndMain;
 	HWND hwndDisplay;
 	HWND hwndGameList;
-	HMENU menu;
-	BOOL skinMode = FALSE;
-	CoreState nextState = CORE_POWERDOWN;
+	static HMENU menu;
 
-	HINSTANCE hInst;
+	static HINSTANCE hInst;
+	static int cursorCounter = 0;
+	static int prevCursorX = -1;
+	static int prevCursorY = -1;
+	static bool mouseButtonDown = false;
+	static bool hideCursor = false;
+	static void *rawInputBuffer;
+	static size_t rawInputBufferSize;
 
 	//W32Util::LayeredWindow *layer;
 #define MAX_LOADSTRING 100
-	TCHAR *szTitle = TEXT("PPSSPP");
-	TCHAR *szWindowClass = TEXT("PPSSPPWnd");
-	TCHAR *szDisplayClass = TEXT("PPSSPPDisplay");
+	const TCHAR *szTitle = TEXT("PPSSPP");
+	const TCHAR *szWindowClass = TEXT("PPSSPPWnd");
+	const TCHAR *szDisplayClass = TEXT("PPSSPPDisplay");
 
-	// Foward declarations of functions included in this code module:
+	// Forward declarations of functions included in this code module:
 	LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 	LRESULT CALLBACK DisplayProc(HWND, UINT, WPARAM, LPARAM);
 	LRESULT CALLBACK About(HWND, UINT, WPARAM, LPARAM);
-	LRESULT CALLBACK Controls(HWND, UINT, WPARAM, LPARAM);
 
-	HWND GetHWND()
-	{
+	HWND GetHWND() {
 		return hwndMain;
 	}
 
-	HWND GetDisplayHWND()
-	{
+	HWND GetDisplayHWND() {
 		return hwndDisplay;
 	}
 
-	void Init(HINSTANCE hInstance)
-	{
+	void SendCheckedNativeKey(KeyInput &key, int vKey) {
+		key.keyCode = windowsTransTable[(int)vKey];
+		if (key.keyCode) {
+			key.flags = GetAsyncKeyState(vKey) ? KEY_DOWN : KEY_UP;
+			NativeKey(key);
+		}
+	}
+
+	void Init(HINSTANCE hInstance) {
 #ifdef THEMES
 		WTL::CTheme::IsThemingSupported();
 #endif
@@ -104,14 +136,29 @@ namespace MainWindow
 
 	void GetWindowRectAtZoom(int zoom, RECT &rcInner, RECT &rcOuter) {
 		// GetWindowRect(hwndMain, &rcInner);
-		rcInner.left = 20;
-		rcInner.top = 120;
+		rcInner.left = 0;
+		rcInner.top = 0;
 
-		rcInner.right=480*zoom + rcInner.left;//+client edge
-		rcInner.bottom=272*zoom + rcInner.top; //+client edge
+		rcInner.right=480*zoom;//+client edge
+		rcInner.bottom=272*zoom; //+client edge
 
 		rcOuter=rcInner;
 		AdjustWindowRect(&rcOuter, WS_OVERLAPPEDWINDOW, TRUE);
+		rcOuter.right += g_Config.iWindowX - rcOuter.left;
+		rcOuter.bottom += g_Config.iWindowY - rcOuter.top;
+		rcOuter.left = g_Config.iWindowX;
+		rcOuter.top = g_Config.iWindowY;
+	}
+
+	void SavePosition() {
+		WINDOWPLACEMENT placement;
+		GetWindowPlacement(hwndMain, &placement);
+		if (placement.showCmd == SW_SHOWNORMAL) {
+			RECT rc;
+			GetWindowRect(hwndMain, &rc);
+			g_Config.iWindowX = rc.left;
+			g_Config.iWindowY = rc.top;
+		}
 	}
 
 	void ResizeDisplay(bool noWindowMovement = false) {
@@ -148,6 +195,43 @@ namespace MainWindow
 		ResizeDisplay();
 	}
 
+	void CorrectCursor() {
+		bool autoHide = g_bFullScreen && !mouseButtonDown && globalUIState == UISTATE_INGAME;
+		if (autoHide && hideCursor) {
+			while (cursorCounter >= 0) {
+				cursorCounter = ShowCursor(FALSE);
+			}
+		} else {
+			hideCursor = !autoHide;
+			if (cursorCounter < 0) {
+				cursorCounter = ShowCursor(TRUE);
+				SetCursor(LoadCursor(NULL, IDC_ARROW));
+			}
+		}
+	}
+
+	void setTexScalingLevel(int num) {
+		g_Config.iTexScalingLevel = num;
+		if(gpu) gpu->ClearCacheNextFrame();
+	}
+
+	void setTexFiltering(int num) {
+		g_Config.iTexFiltering = num;
+	}
+
+	void setTexScalingType(int num) {
+		g_Config.iTexScalingType = num;
+		if(gpu) gpu->ClearCacheNextFrame();
+	}
+
+	void setFpsLimit(int fps) {
+		g_Config.iFpsLimit = fps;
+	}
+
+	void enableCheats(bool cheats){
+		g_Config.bEnableCheats = cheats;
+	}
+
 	BOOL Show(HINSTANCE hInstance, int nCmdShow)
 	{
 		hInst = hInstance; // Store instance handle in our global variable
@@ -156,15 +240,19 @@ namespace MainWindow
 		if (zoom < 1) zoom = 1;
 		if (zoom > 4) zoom = 4;
 		
-		RECT rc,rcOrig;
+		RECT rc, rcOrig;
 		GetWindowRectAtZoom(zoom, rcOrig, rc);
 
-		u32 style = skinMode ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+		u32 style = WS_OVERLAPPEDWINDOW;
 
 		hwndMain = CreateWindowEx(0,szWindowClass, "", style,
-			rc.left, rc.top, rc.right-rc.left, rc.bottom-rc.top, NULL, NULL, hInstance, NULL);
-		SetPlaying(0);
+			rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, hInstance, NULL);
 		if (!hwndMain)
+			return FALSE;
+
+		hwndDisplay = CreateWindowEx(0, szDisplayClass, TEXT(""), WS_CHILD | WS_VISIBLE,
+			rcOrig.left, rcOrig.top, rcOrig.right - rcOrig.left, rcOrig.bottom - rcOrig.top, hwndMain, 0, hInstance, 0);
+		if (!hwndDisplay)
 			return FALSE;
 
 		menu = GetMenu(hwndMain);
@@ -182,38 +270,49 @@ namespace MainWindow
 		{
 			SetMenuInfo(GetSubMenu(menu,i),&info);
 		}
-
-		hwndDisplay = CreateWindowEx(0,szDisplayClass,TEXT(""),
-			WS_CHILD|WS_VISIBLE,
-			0,0,/*rcOrig.left,rcOrig.top,*/rcOrig.right-rcOrig.left,rcOrig.bottom-rcOrig.top,hwndMain,0,hInstance,0);
-
-		ShowWindow(hwndMain, nCmdShow);
-		//accept dragged files
-		DragAcceptFiles(hwndMain, TRUE);
 		UpdateMenus();
 
-		SetFocus(hwndMain);
+		//accept dragged files
+		DragAcceptFiles(hwndMain, TRUE);
+
+		hideCursor = true;
+		SetTimer(hwndMain, TIMER_CURSORUPDATE, CURSORUPDATE_INTERVAL_MS, 0);
+
+		Update();
+		SetPlaying(0);
+		
+		ShowWindow(hwndMain, nCmdShow);
+
+		W32Util::MakeTopMost(hwndMain, g_Config.bTopMost);
+
+#if ENABLE_TOUCH
+		RegisterTouchWindow(hwndDisplay, TWF_WANTPALM);
+#endif
+
+		RAWINPUTDEVICE keyboard;
+		memset(&keyboard, 0, sizeof(keyboard));
+		keyboard.usUsagePage = 1;
+		keyboard.usUsage = 6;
+		keyboard.dwFlags = 0; // RIDEV_NOLEGACY | ;
+		RegisterRawInputDevices(&keyboard, 1, sizeof(RAWINPUTDEVICE));
+
+		SetFocus(hwndDisplay);
 
 		return TRUE;
 	}
 
-	void BrowseAndBoot(void)
+	void BrowseAndBoot(std::string defaultPath)
 	{
 		std::string fn;
-		std::string filter = "";
-
-		filter += "PSP";
-		filter += "|";
-		filter += "*.pbp;*.elf;*.iso;*.cso;*.prx";
-		filter += "|";
-		filter += "|";
+		std::string filter = "PSP ROMs (*.iso *.cso *.pbp *.elf)|*.pbp;*.elf;*.iso;*.cso;*.prx|All files (*.*)|*.*||";
+		
 		for (int i=0; i<(int)filter.length(); i++)
 		{
 			if (filter[i] == '|')
 				filter[i] = '\0';
 		}
 
-		if (W32Util::BrowseForFileName(true, GetHWND(), "Load File",0,filter.c_str(),"*.pbp;*.elf;*.iso;*.cso;",fn))
+		if (W32Util::BrowseForFileName(true, GetHWND(), "Load File", defaultPath.size() ? defaultPath.c_str() : 0, filter.c_str(),"*.pbp;*.elf;*.iso;*.cso;",fn))
 		{
 			// decode the filename with fullpath
 			std::string fullpath = fn;
@@ -223,11 +322,8 @@ namespace MainWindow
 			char ext[MAX_PATH];
 			_splitpath(fullpath.c_str(), drive, dir, fname, ext);
 
-			// generate the mapfilename
 			std::string executable = std::string(drive) + std::string(dir) + std::string(fname) + std::string(ext);
-			std::string mapfile = std::string(drive) + std::string(dir) + std::string(fname) + std::string(".map");
-
-			EmuThread_Start(executable.c_str());
+			NativeMessageReceived("boot", executable.c_str());
 		}
 	}
 
@@ -241,17 +337,117 @@ namespace MainWindow
 			break;
 		case WM_SIZE:
 			break;
-			
+
 		case WM_ERASEBKGND:
 	  	return DefWindowProc(hWnd, message, wParam, lParam);
-  
+
+		// Poor man's touch - mouse input. We send the data both as an input_state pointer,
+		// and as asynchronous touch events for minimal latency.
+
 		case WM_LBUTTONDOWN:
-//			Update();
+			// Hack: Take the opportunity to show the cursor.
+			mouseButtonDown = true;
+			{
+				lock_guard guard(input_state.lock);
+				input_state.mouse_valid = true;
+				input_state.pointer_down[0] = true;
+
+				int factor = g_Config.iWindowZoom == 1 ? 2 : 1;
+				input_state.pointer_x[0] = GET_X_LPARAM(lParam) * factor; 
+				input_state.pointer_y[0] = GET_Y_LPARAM(lParam) * factor;
+
+				TouchInput touch;
+				touch.id = 0;
+				touch.flags = TOUCH_DOWN;
+				touch.x = GET_X_LPARAM(lParam);
+				touch.y = GET_Y_LPARAM(lParam);
+				NativeTouch(touch);
+			}
 			break;
 
-		case WM_LBUTTONDBLCLK:
-			MessageBox(0,"Fullscreen isn't implemented yet","Sorry",0);
+		case WM_MOUSEMOVE:
+			{
+				// Hack: Take the opportunity to show the cursor.
+				mouseButtonDown = (wParam & MK_LBUTTON) != 0;
+				int cursorX = GET_X_LPARAM(lParam);
+				int cursorY = GET_Y_LPARAM(lParam);
+				if (abs(cursorX - prevCursorX) > 1 || abs(cursorY - prevCursorY) > 1) {
+					hideCursor = false;
+					SetTimer(hwndMain, TIMER_CURSORMOVEUPDATE, CURSORUPDATE_MOVE_TIMESPAN_MS, 0);
+				}
+				prevCursorX = cursorX;
+				prevCursorY = cursorY;
+
+				lock_guard guard(input_state.lock);
+				int factor = g_Config.iWindowZoom == 1 ? 2 : 1;
+				input_state.pointer_x[0] = GET_X_LPARAM(lParam) * factor; 
+				input_state.pointer_y[0] = GET_Y_LPARAM(lParam) * factor;
+
+				if (wParam & MK_LBUTTON) {
+					TouchInput touch;
+					touch.id = 0;
+					touch.flags = TOUCH_MOVE;
+					touch.x = GET_X_LPARAM(lParam);
+					touch.y = GET_Y_LPARAM(lParam);
+					NativeTouch(touch);
+				}
+			}
 			break;
+
+		case WM_LBUTTONUP:
+			// Hack: Take the opportunity to hide the cursor.
+			mouseButtonDown = false;
+			{
+				lock_guard guard(input_state.lock);
+				input_state.pointer_down[0] = false;
+				int factor = g_Config.iWindowZoom == 1 ? 2 : 1;
+				input_state.pointer_x[0] = GET_X_LPARAM(lParam) * factor; 
+				input_state.pointer_y[0] = GET_Y_LPARAM(lParam) * factor;
+
+				TouchInput touch;
+				touch.id = 0;
+				touch.flags = TOUCH_UP;
+				touch.x = GET_X_LPARAM(lParam);
+				touch.y = GET_Y_LPARAM(lParam);
+				NativeTouch(touch);
+			}
+			break;
+
+
+		// Actual touch! Unfinished
+
+		case WM_TOUCH:
+			{
+				// TODO: Enabling this section will probably break things on Windows XP.
+				// We probably need to manually fetch pointers to GetTouchInputInfo and CloseTouchInputHandle.
+#if ENABLE_TOUCH
+				UINT inputCount = LOWORD(wParam);
+				TOUCHINPUT *inputs = new TOUCHINPUT[inputCount];
+				if (GetTouchInputInfo((HTOUCHINPUT)lParam,
+					inputCount,
+					inputs,
+					sizeof(TOUCHINPUT)))
+				{
+					for (int i = 0; i < inputCount; i++) {
+						// TODO: process inputs here!
+
+					}
+
+					if (!CloseTouchInputHandle((HTOUCHINPUT)lParam))
+					{
+						// error handling
+					}
+				}
+				else
+				{
+					// GetLastError() and error handling
+				}
+				delete [] inputs;
+				return DefWindowProc(hWnd, message, wParam, lParam);
+#endif
+			}
+
+
 		case WM_PAINT:
 			return DefWindowProc(hWnd, message, wParam, lParam);
 		default:
@@ -260,6 +456,30 @@ namespace MainWindow
 		return 0;
 	}
 
+	static int GetTrueVKey(const RAWKEYBOARD &kb) {
+		switch (kb.VKey) {
+		case VK_SHIFT:
+			if (kb.MakeCode == 0x36)  // WTF?
+				return VK_RSHIFT;
+			else
+				return VK_LSHIFT;
+		case VK_CONTROL:
+			if (kb.Flags == 2)  // Seems to contradict some documentation
+				return VK_RCONTROL;
+			else
+				return VK_LCONTROL;
+
+		// For some reason, we don't receive KEYDOWN for Alt keys, only KEYUP. 
+		case VK_MENU:
+			if (kb.Flags == 3)
+				return VK_RMENU;  // Right Alt / AltGr
+			else
+				return VK_LMENU;  // Left Alt
+		default:
+			return kb.VKey;
+		}
+	}
+	
 	LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 		int wmId, wmEvent;
@@ -271,86 +491,104 @@ namespace MainWindow
 			break;
 
 		case WM_MOVE:
+			SavePosition();
 			ResizeDisplay();
 			break;
 
 		case WM_SIZE:
+			SavePosition();
 			ResizeDisplay();
 			break;
 
+		case WM_TIMER:
+			// Hack: Take the opportunity to also show/hide the mouse cursor in fullscreen mode.
+			switch (wParam)
+			{
+			case TIMER_CURSORUPDATE:
+				CorrectCursor();
+				return 0;
+			case TIMER_CURSORMOVEUPDATE:
+				hideCursor = true;
+				KillTimer(hWnd, TIMER_CURSORMOVEUPDATE);
+				return 0;
+			}
+			break;
+
 		case WM_COMMAND:
+			{
+			if (!EmuThread_Ready())
+				return DefWindowProc(hWnd, message, wParam, lParam);
+			I18NCategory *g = GetI18NCategory("Graphics");
+
 			wmId    = LOWORD(wParam); 
 			wmEvent = HIWORD(wParam); 
 			// Parse the menu selections:
 			switch (wmId)
 			{
 			case ID_FILE_LOAD:
-				BrowseAndBoot();
+				BrowseAndBoot("");
+				break;
+
+			case ID_FILE_LOAD_MEMSTICK:
+				{
+					std::string memStickDir, flash0dir;
+					GetSysDirectories(memStickDir, flash0dir);
+					memStickDir += "PSP\\GAME\\";
+					BrowseAndBoot(memStickDir);
+				}
 				break;
 
 			case ID_FILE_REFRESHGAMELIST:
 				break;
 
-			case ID_EMULATION_RUN:
-				if (g_State.bEmuThreadStarted)
+			case ID_FILE_MEMSTICK:
 				{
-					for (int i=0; i<numCPUs; i++)
-						if (disasmWindow[i])
-							SendMessage(disasmWindow[i]->GetDlgHandle(), WM_COMMAND, IDC_STOP, 0);
-					for (int i=0; i<numCPUs; i++)
-						if (disasmWindow[i])
-							SendMessage(disasmWindow[i]->GetDlgHandle(), WM_COMMAND, IDC_GO, 0);
+					std::string memStickDir, flash0dir;
+					GetSysDirectories(memStickDir, flash0dir);
+					ShellExecuteA(NULL, "open", memStickDir.c_str(), 0, 0, SW_SHOW);
 				}
 				break;
 
-			case ID_EMULATION_STOP:
-				for (int i=0; i<numCPUs; i++)
-					if (disasmWindow[i])
-						SendMessage(disasmWindow[i]->GetDlgHandle(), WM_COMMAND, IDC_STOP, 0);
-
-				Core_WaitInactive();
-
-				for (int i=0; i<numCPUs; i++)
-					if (disasmWindow[i])
-						SendMessage(disasmWindow[i]->GetDlgHandle(), WM_CLOSE, 0, 0);
-				for (int i=0; i<numCPUs; i++)
-					if (memoryWindow[i])
-						SendMessage(memoryWindow[i]->GetDlgHandle(), WM_CLOSE, 0, 0);
-
-				EmuThread_Stop();
-				SetPlaying(0);
-				Update();
-				UpdateMenus();
+			case ID_EMULATION_RUN:
+				if (Core_IsStepping()) {
+					Core_EnableStepping(false);
+				} else {
+					NativeMessageReceived("run", "");
+				}
+				if (disasmWindow[0])
+					SendMessage(disasmWindow[0]->GetDlgHandle(), WM_COMMAND, IDC_GO, 0);
 				break;
 
-			case ID_EMULATION_RESET:
-				for (int i=0; i<numCPUs; i++)
-					if (disasmWindow[i])
-						SendMessage(disasmWindow[i]->GetDlgHandle(), WM_COMMAND, IDC_STOP, 0);
-
-				Core_WaitInactive();
-
-				for (int i=0; i<numCPUs; i++)
-					if (disasmWindow[i])
-						SendMessage(disasmWindow[i]->GetDlgHandle(), WM_CLOSE, 0, 0);
-				for (int i=0; i<numCPUs; i++)
-					if (memoryWindow[i])
-						SendMessage(memoryWindow[i]->GetDlgHandle(), WM_CLOSE, 0, 0);
-
-				EmuThread_Stop();
-
-				EmuThread_Start(GetCurrentFilename());
+			case ID_EMULATION_STOP:
+				if (memoryWindow[0]) {
+					SendMessage(memoryWindow[0]->GetDlgHandle(), WM_CLOSE, 0, 0);
+				}
+				if (disasmWindow[0]) {
+					SendMessage(disasmWindow[0]->GetDlgHandle(), WM_CLOSE, 0, 0);
+				}
+				if (Core_IsStepping()) {
+					Core_EnableStepping(false);
+				}
+				NativeMessageReceived("stop", "");
+				SetPlaying(0);
+				Update();
 				break;
 
 			case ID_EMULATION_PAUSE:
-				for (int i=0; i<numCPUs; i++)
-					if (disasmWindow[i])
-						SendMessage(disasmWindow[i]->GetDlgHandle(), WM_COMMAND, IDC_STOP, 0);
+				if (disasmWindow[0])
+				{
+					SendMessage(disasmWindow[0]->GetDlgHandle(), WM_COMMAND, IDC_STOP, 0);
+				} else if (globalUIState == UISTATE_INGAME) {
+					Core_EnableStepping(true);
+				}
+				break;
+
+			case ID_EMULATION_RESET:
+				NativeMessageReceived("reset", "");
 				break;
 
 			case ID_EMULATION_SPEEDLIMIT:
 				g_Config.bSpeedLimit = !g_Config.bSpeedLimit;
-				UpdateMenus();
 				break;
 
 			case ID_FILE_LOADSTATEFILE:
@@ -383,53 +621,84 @@ namespace MainWindow
 
 			case ID_OPTIONS_SCREEN1X:
 				SetZoom(1);
-				UpdateMenus();
 				break;
 			case ID_OPTIONS_SCREEN2X:
 				SetZoom(2);
-				UpdateMenus();
 				break;
 			case ID_OPTIONS_SCREEN3X:
 				SetZoom(3);
-				UpdateMenus();
 				break;
 			case ID_OPTIONS_SCREEN4X:
 				SetZoom(4);
-				UpdateMenus();
+				break;
+
+			case ID_OPTIONS_MIPMAP:
+				g_Config.bMipMap = !g_Config.bMipMap;
+				break;
+
+			case ID_OPTIONS_VSYNC:
+				g_Config.iVSyncInterval = !g_Config.iVSyncInterval;
+				break;
+
+			case ID_TEXTURESCALING_OFF:
+				setTexScalingLevel(1);
+				break;
+			case ID_TEXTURESCALING_2X:
+				setTexScalingLevel(2);
+				break;
+			case ID_TEXTURESCALING_3X:
+				setTexScalingLevel(3);
+				break;
+			case ID_TEXTURESCALING_4X:
+				setTexScalingLevel(4);
+				break;
+			case ID_TEXTURESCALING_5X:
+				setTexScalingLevel(5);
+				break;
+
+			case ID_TEXTURESCALING_XBRZ:
+				setTexScalingType(TextureScaler::XBRZ);
+				break;
+			case ID_TEXTURESCALING_HYBRID:
+				setTexScalingType(TextureScaler::HYBRID);
+				break;
+			case ID_TEXTURESCALING_BICUBIC:
+				setTexScalingType(TextureScaler::BICUBIC);
+				break;
+			case ID_TEXTURESCALING_HYBRID_BICUBIC:
+				setTexScalingType(TextureScaler::HYBRID_BICUBIC);
+				break;
+
+			case ID_TEXTURESCALING_DEPOSTERIZE:
+				g_Config.bTexDeposterize = !g_Config.bTexDeposterize;
+				if(gpu) gpu->ClearCacheNextFrame();
 				break;
 
 			case ID_OPTIONS_BUFFEREDRENDERING:
 				g_Config.bBufferedRendering = !g_Config.bBufferedRendering;
-				UpdateMenus();
+				osm.ShowOnOff(g->T("Buffered Rendering"), g_Config.bBufferedRendering);
 				if (gpu)
 					gpu->Resized();  // easy way to force a clear...
 				break;
 
 			case ID_OPTIONS_SHOWDEBUGSTATISTICS:
 				g_Config.bShowDebugStats = !g_Config.bShowDebugStats;
-				UpdateMenus();
 				break;
 
 			case ID_OPTIONS_HARDWARETRANSFORM:
 				g_Config.bHardwareTransform = !g_Config.bHardwareTransform;
-				UpdateMenus();
+				osm.ShowOnOff(g->T("Hardware Transform"), g_Config.bHardwareTransform);
 				break;
 
 			case ID_OPTIONS_STRETCHDISPLAY:
 				g_Config.bStretchToDisplay = !g_Config.bStretchToDisplay;
-				UpdateMenus();
 				if (gpu)
 					gpu->Resized();  // easy way to force a clear...
 				break;
 
 			case ID_OPTIONS_FRAMESKIP:
-				g_Config.iFrameSkip = !g_Config.iFrameSkip;
-				UpdateMenus();
-				break;
-
-			case ID_OPTIONS_USEMEDIAENGINE:
-				g_Config.bUseMediaEngine = !g_Config.bUseMediaEngine;
-				UpdateMenus();
+				g_Config.iFrameSkip = g_Config.iFrameSkip == 0 ? 1 : 0;
+				osm.ShowOnOff(g->T("Frame Skipping"), g_Config.iFrameSkip != 0);
 				break;
 
 			case ID_FILE_EXIT:
@@ -438,16 +707,15 @@ namespace MainWindow
 
 			case ID_CPU_DYNAREC:
 				g_Config.bJit = true;
-				UpdateMenus();
-				break;			
+				osm.ShowOnOff(g->T("Dynarec", "Dynarec (JIT)"), g_Config.bJit);
+				break;	
+
 			case ID_CPU_INTERPRETER:
 				g_Config.bJit = false;
-				UpdateMenus();
 				break;
 
 			case ID_EMULATION_RUNONLOAD:
 				g_Config.bAutoRun = !g_Config.bAutoRun;
-				UpdateMenus();
 				break;
 
 			case ID_DEBUG_DUMPNEXTFRAME:
@@ -459,12 +727,10 @@ namespace MainWindow
 				if (W32Util::BrowseForFileName(true, hWnd, "Load .MAP",0,"Maps\0*.map\0All files\0*.*\0\0","map",fn)) {
 					symbolMap.LoadSymbolMap(fn.c_str());
 //					HLE_PatchFunctions();
-					for (int i=0; i<numCPUs; i++)
-						if (disasmWindow[i])
-							disasmWindow[i]->NotifyMapLoaded();
-					for (int i=0; i<numCPUs; i++)
-						if (memoryWindow[i])
-							memoryWindow[i]->NotifyMapLoaded();
+					if (disasmWindow[0])
+						disasmWindow[0]->NotifyMapLoaded();
+					if (memoryWindow[0])
+						memoryWindow[0]->NotifyMapLoaded();
 				}
 				break;
 			case ID_DEBUG_SAVEMAPFILE:
@@ -495,7 +761,6 @@ namespace MainWindow
 
 			case ID_OPTIONS_IGNOREILLEGALREADS:
 				g_Config.bIgnoreBadMemAccess = !g_Config.bIgnoreBadMemAccess;
-				UpdateMenus();
 				break;
 
 			case ID_OPTIONS_FULLSCREEN:
@@ -505,74 +770,113 @@ namespace MainWindow
 				} else {
 					_ViewFullScreen(hWnd);
 				}
-				UpdateMenus();
 				break;
 
-			case ID_OPTIONS_WIREFRAME:
-				g_Config.bDrawWireframe = !g_Config.bDrawWireframe;
-				UpdateMenus();
-				break;
 			case ID_OPTIONS_VERTEXCACHE:
 				g_Config.bVertexCache = !g_Config.bVertexCache;
-				UpdateMenus();
 				break;
 			case ID_OPTIONS_SHOWFPS:
-				g_Config.bShowFPSCounter = !g_Config.bShowFPSCounter;
-				UpdateMenus();
+				g_Config.iShowFPSCounter = !g_Config.iShowFPSCounter;
 				break;
 			case ID_OPTIONS_DISPLAYRAWFRAMEBUFFER:
 				g_Config.bDisplayFramebuffer = !g_Config.bDisplayFramebuffer;
-				UpdateMenus();
 				break;
 			case ID_OPTIONS_FASTMEMORY:
 				g_Config.bFastMemory = !g_Config.bFastMemory;
-				UpdateMenus();
 				break;
 			case ID_OPTIONS_USEVBO:
 				g_Config.bUseVBO = !g_Config.bUseVBO;
-				UpdateMenus();
+				break;
+			case ID_OPTIONS_TEXTUREFILTERING_AUTO:
+				setTexFiltering(0);
+				break;
+			case ID_OPTIONS_NEARESTFILTERING:
+				setTexFiltering(2) ;
 				break;
 			case ID_OPTIONS_LINEARFILTERING:
-				g_Config.bLinearFiltering = !g_Config.bLinearFiltering;
-				UpdateMenus();
+				setTexFiltering(3) ;
 				break;
+			case ID_OPTIONS_LINEARFILTERING_CG:
+				setTexFiltering(4) ;
+				break;
+			case ID_OPTIONS_TOPMOST:
+				g_Config.bTopMost = !g_Config.bTopMost;
+				W32Util::MakeTopMost(hWnd, g_Config.bTopMost);
+				break;
+
 			case ID_OPTIONS_SIMPLE2XSSAA:
 				g_Config.SSAntiAliasing = !g_Config.SSAntiAliasing;
-				UpdateMenus();
 				ResizeDisplay(true);
 				break;
 			case ID_OPTIONS_CONTROLS:
-				DialogManager::EnableAll(FALSE);
-				DialogBox(hInst, (LPCTSTR)IDD_CONTROLS, hWnd, (DLGPROC)Controls);
-				DialogManager::EnableAll(TRUE);
+				MessageBox(hWnd, "Control mapping has been moved to the in-window Settings menu.\n", "Sorry", 0);
 				break;
 
-      case ID_HELP_OPENWEBSITE:
-				ShellExecute(NULL, "open", "http://www.ppsspp.org/", NULL, NULL, SW_SHOWNORMAL);
-        break;
+			case ID_EMULATION_SOUND:
+				g_Config.bEnableSound = !g_Config.bEnableSound;
+				break;
 
-      case ID_HELP_ABOUT:
+			case ID_HELP_OPENWEBSITE:
+				ShellExecute(NULL, "open", "http://www.ppsspp.org/", NULL, NULL, SW_SHOWNORMAL);
+				break;
+
+			case ID_HELP_OPENFORUM:
+				ShellExecute(NULL, "open", "http://forums.ppsspp.org/", NULL, NULL, SW_SHOWNORMAL);
+				break;
+
+			case ID_HELP_ABOUT:
 				DialogManager::EnableAll(FALSE);
 				DialogBox(hInst, (LPCTSTR)IDD_ABOUTBOX, hWnd, (DLGPROC)About);
 				DialogManager::EnableAll(TRUE);
 				break;
+			case ID_DEBUG_TAKESCREENSHOT:
+				g_TakeScreenshot = true;
+				break;
 
 			default:
-				{
-					MessageBox(hwndMain,"Unimplemented","Sorry",0);
-				}
+				MessageBox(hwndMain,"Unimplemented","Sorry",0);
 				break;
 			}
-			break;
-		case WM_KEYDOWN:
-			{
-				static int mojs=0;
-				mojs ^= 1;
-				//SetSkinMode(mojs);
 			}
 			break;
+
+		case WM_INPUT:
+			{
+				UINT dwSize;
+				GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &dwSize, sizeof(RAWINPUTHEADER));
+				if (!rawInputBuffer) {
+					rawInputBuffer = malloc(dwSize);
+					rawInputBufferSize = dwSize;
+				}
+				if (dwSize > rawInputBufferSize) {
+					rawInputBuffer = realloc(rawInputBuffer, dwSize);
+				}
+				GetRawInputData((HRAWINPUT)lParam, RID_INPUT, rawInputBuffer, &dwSize, sizeof(RAWINPUTHEADER));
+				RAWINPUT* raw = (RAWINPUT*)rawInputBuffer;
+
+				if (raw->header.dwType == RIM_TYPEKEYBOARD) 	{
+					KeyInput key;
+					key.deviceId = DEVICE_ID_KEYBOARD;
+					if (raw->data.keyboard.Message == WM_KEYDOWN) {
+						key.flags = KEY_DOWN;
+						key.keyCode = windowsTransTable[GetTrueVKey(raw->data.keyboard)];
+						if (key.keyCode)
+							NativeKey(key);
+					} else if (raw->data.keyboard.Message == WM_KEYUP) {
+						key.flags = KEY_UP;
+						key.keyCode = windowsTransTable[GetTrueVKey(raw->data.keyboard)];
+						if (key.keyCode)
+							NativeKey(key);	
+					}
+				}
+			}
+			return 0;
+
 		case WM_DROPFILES:
 			{
+				if (!EmuThread_Ready())
+					return DefWindowProc(hWnd, message, wParam, lParam);
+
 				HDROP hdrop = (HDROP)wParam;
 				int count = DragQueryFile(hdrop,0xFFFFFFFF,0,0);
 				if (count != 1)
@@ -584,68 +888,47 @@ namespace MainWindow
 					TCHAR filename[512];
 					DragQueryFile(hdrop,0,filename,512);
 					TCHAR *type = filename+_tcslen(filename)-3;
-/*
-					TBootFileType t;
-					if (strcmp(type,"bin")==0)
-						t=BOOT_BIN;
-					else if (strcmp(type,"elf")==0)
-						t=BOOT_ELF;
-					else if (strcmp(type,"dol")==0)
-						t=BOOT_DOL;
-					else
-					{
-						MessageBox(hwndMain,"Not a runnable Gamecube file","Error",MB_ICONERROR);
-						break;
-					}
-					CCore::Start(0,filename,t);
-					*/
 
-					if (g_State.bEmuThreadStarted)
-					{
-						SendMessage(hWnd, WM_COMMAND, ID_EMULATION_STOP, 0);
-					}
+					SendMessage(hWnd, WM_COMMAND, ID_EMULATION_STOP, 0);
+					// Ugly, need to wait for the stop message to process in the EmuThread.
+					Sleep(20);
 					
 					MainWindow::SetPlaying(filename);
 					MainWindow::Update();
-					MainWindow::UpdateMenus();
 
-					EmuThread_Start(filename);
+					NativeMessageReceived("boot", filename);
 				}
 			}
 			break;
 
 		case WM_CLOSE:
-			Core_Stop();
-			Core_WaitInactive(200);
+			/*
+			if (g_Config.bConfirmOnQuit && __KernelIsRunning())
+				if (IDYES != MessageBox(hwndMain, "A game is in progress. Are you sure you want to exit?",
+					"Are you sure?", MB_YESNO | MB_ICONQUESTION))
+					return 0;
+			//*/
 			EmuThread_Stop();
 
-			/*
-			if (g_Config.bConfirmOnQuit && CCore::IsRunning())
-			{
-				if (IDNO==MessageBox(hwndMain,"A game is in progress. Are you sure you want to exit?","Are you sure?",MB_YESNO|MB_ICONQUESTION))
-					return 1;//or 1?
-				else
-					return DefWindowProc(hWnd,message,wParam,lParam);
-				break;
-			}
-			else
-			*/
 			return DefWindowProc(hWnd,message,wParam,lParam);
 
 		case WM_DESTROY:
+			KillTimer(hWnd, TIMER_CURSORUPDATE);
+			KillTimer(hWnd, TIMER_CURSORMOVEUPDATE);
 			PostQuitMessage(0);
 			break;
-		case WM_NCHITTEST:
-			if (skinMode)
-				return HTCAPTION;
-			else
-				return DefWindowProc(hWnd,message,wParam,lParam);
 
 		case WM_USER+1:
+			if (disasmWindow[0])
+				SendMessage(disasmWindow[0]->GetDlgHandle(), WM_CLOSE, 0, 0);
+			if (memoryWindow[0])
+				SendMessage(memoryWindow[0]->GetDlgHandle(), WM_CLOSE, 0, 0);
+
 			disasmWindow[0] = new CDisasm(MainWindow::GetHInstance(), MainWindow::GetHWND(), currentDebugMIPS);
 			DialogManager::AddDlg(disasmWindow[0]);
 			disasmWindow[0]->Show(g_Config.bShowDebuggerOnLoad);
-			if (g_Config.bFullScreen)  _ViewFullScreen(hWnd);
+			if (g_Config.bFullScreen)
+				_ViewFullScreen(hWnd);
 			memoryWindow[0] = new CMemoryDlg(MainWindow::GetHInstance(), MainWindow::GetHWND(), currentDebugMIPS);
 			DialogManager::AddDlg(memoryWindow[0]);
 			if (disasmWindow[0])
@@ -653,17 +936,36 @@ namespace MainWindow
 			if (memoryWindow[0])
 				memoryWindow[0]->NotifyMapLoaded();
 
-			if (nextState == CORE_RUNNING)
-				PostMessage(hwndMain, WM_COMMAND, ID_EMULATION_RUN, 0);
+			SetForegroundWindow(hwndMain);
+			break;
+
+
+		case WM_MENUSELECT:
+			// Unfortunately, accelerate keys (hotkeys) shares the same enabled/disabled states
+			// with corresponding menu items.
 			UpdateMenus();
 			break;
+
+		// Turn off the screensaver.
+		// Note that if there's a screensaver password, this simple method
+		// doesn't work on Vista or higher.
+		case WM_SYSCOMMAND:
+			{
+				switch (wParam)
+				{
+				case SC_SCREENSAVE:  
+					return 0;
+				case SC_MONITORPOWER:
+					return 0;      
+				}
+				return DefWindowProc(hWnd, message, wParam, lParam);
+			}
 
 		default:
 			return DefWindowProc(hWnd, message, wParam, lParam);
 		}
 		return 0;
 	}
-
 
 	void UpdateMenus()
 	{
@@ -679,36 +981,22 @@ namespace MainWindow
 		CHECKITEM(ID_CPU_DYNAREC,g_Config.bJit == true);
 		CHECKITEM(ID_OPTIONS_BUFFEREDRENDERING, g_Config.bBufferedRendering);
 		CHECKITEM(ID_OPTIONS_SHOWDEBUGSTATISTICS, g_Config.bShowDebugStats);
-		CHECKITEM(ID_OPTIONS_WIREFRAME, g_Config.bDrawWireframe);
 		CHECKITEM(ID_OPTIONS_HARDWARETRANSFORM, g_Config.bHardwareTransform);
 		CHECKITEM(ID_OPTIONS_FASTMEMORY, g_Config.bFastMemory);
-		CHECKITEM(ID_OPTIONS_LINEARFILTERING, g_Config.bLinearFiltering);
 		CHECKITEM(ID_OPTIONS_SIMPLE2XSSAA, g_Config.SSAntiAliasing);
 		CHECKITEM(ID_OPTIONS_STRETCHDISPLAY, g_Config.bStretchToDisplay);
 		CHECKITEM(ID_EMULATION_RUNONLOAD, g_Config.bAutoRun);
 		CHECKITEM(ID_OPTIONS_USEVBO, g_Config.bUseVBO);
 		CHECKITEM(ID_OPTIONS_VERTEXCACHE, g_Config.bVertexCache);
-		CHECKITEM(ID_OPTIONS_SHOWFPS, g_Config.bShowFPSCounter);
+		CHECKITEM(ID_OPTIONS_SHOWFPS, g_Config.iShowFPSCounter);
 		CHECKITEM(ID_OPTIONS_FRAMESKIP, g_Config.iFrameSkip != 0);
-		CHECKITEM(ID_OPTIONS_USEMEDIAENGINE, g_Config.bUseMediaEngine);
-
-		UINT enable = !Core_IsStepping() ? MF_GRAYED : MF_ENABLED;
-		EnableMenuItem(menu,ID_EMULATION_RUN, g_State.bEmuThreadStarted ? enable : MF_GRAYED);
-		EnableMenuItem(menu,ID_EMULATION_PAUSE, g_State.bEmuThreadStarted ? !enable : MF_GRAYED);
-		EnableMenuItem(menu,ID_EMULATION_RESET, g_State.bEmuThreadStarted ? MF_ENABLED : MF_GRAYED);
-
-		enable = g_State.bEmuThreadStarted ? MF_GRAYED : MF_ENABLED;
-		EnableMenuItem(menu,ID_FILE_LOAD,enable);
-		EnableMenuItem(menu,ID_FILE_SAVESTATEFILE,!enable);
-		EnableMenuItem(menu,ID_FILE_LOADSTATEFILE,!enable);
-		EnableMenuItem(menu,ID_FILE_QUICKSAVESTATE,!enable);
-		EnableMenuItem(menu,ID_FILE_QUICKLOADSTATE,!enable);
-		EnableMenuItem(menu,ID_CPU_DYNAREC,enable);
-		EnableMenuItem(menu,ID_CPU_INTERPRETER,enable);
-		EnableMenuItem(menu,ID_EMULATION_STOP,!enable);
-		EnableMenuItem(menu,ID_OPTIONS_USEMEDIAENGINE,enable);
-
-		const int zoomitems[4] = {
+		CHECKITEM(ID_OPTIONS_MIPMAP, g_Config.bMipMap);
+		CHECKITEM(ID_OPTIONS_VSYNC, g_Config.iVSyncInterval != 0);
+		CHECKITEM(ID_OPTIONS_TOPMOST, g_Config.bTopMost);
+		CHECKITEM(ID_EMULATION_SOUND, g_Config.bEnableSound);
+		CHECKITEM(ID_TEXTURESCALING_DEPOSTERIZE, g_Config.bTexDeposterize);
+		
+		static const int zoomitems[4] = {
 			ID_OPTIONS_SCREEN1X,
 			ID_OPTIONS_SCREEN2X,
 			ID_OPTIONS_SCREEN3X,
@@ -717,8 +1005,72 @@ namespace MainWindow
 		for (int i = 0; i < 4; i++) {
 			CheckMenuItem(menu, zoomitems[i], MF_BYCOMMAND | ((i == g_Config.iWindowZoom - 1) ? MF_CHECKED : MF_UNCHECKED));
 		}
+
+		static const int texscalingitems[] = {
+			ID_TEXTURESCALING_OFF,
+			ID_TEXTURESCALING_2X,
+			ID_TEXTURESCALING_3X,
+			ID_TEXTURESCALING_4X,
+			ID_TEXTURESCALING_5X,
+		};
+		for (int i = 0; i < 5; i++) {
+			CheckMenuItem(menu, texscalingitems[i], MF_BYCOMMAND | ((i == g_Config.iTexScalingLevel-1) ? MF_CHECKED : MF_UNCHECKED));
+		}
+
+		static const int texscalingtypeitems[] = {
+			ID_TEXTURESCALING_XBRZ,
+			ID_TEXTURESCALING_HYBRID,
+			ID_TEXTURESCALING_BICUBIC,
+			ID_TEXTURESCALING_HYBRID_BICUBIC,
+		};
+		for (int i = 0; i < 4; i++) {
+			CheckMenuItem(menu, texscalingtypeitems[i], MF_BYCOMMAND | ((i == g_Config.iTexScalingType) ? MF_CHECKED : MF_UNCHECKED));
+		}
+
+		static const int texfilteringitems[] = {
+			ID_OPTIONS_TEXTUREFILTERING_AUTO,
+			ID_OPTIONS_NEARESTFILTERING,
+			ID_OPTIONS_LINEARFILTERING,
+			ID_OPTIONS_LINEARFILTERING_CG,
+		};
+		for (int i = 0; i < 4; i++) {
+			int texFilterLevel = i > 0? (g_Config.iTexFiltering - 1) : g_Config.iTexFiltering;
+			CheckMenuItem(menu, texfilteringitems[i], MF_BYCOMMAND | ((i == texFilterLevel) ? MF_CHECKED : MF_UNCHECKED));
+		}
+
+		UpdateCommands();
 	}
 
+	void UpdateCommands()
+	{
+		static GlobalUIState lastGlobalUIState = UISTATE_PAUSEMENU;
+		static CoreState lastCoreState = CORE_ERROR;
+
+		if (lastGlobalUIState == globalUIState && lastCoreState == coreState)
+			return;
+
+		lastCoreState = coreState;
+		lastGlobalUIState = globalUIState;
+
+		HMENU menu = GetMenu(GetHWND());
+		EnableMenuItem(menu,ID_EMULATION_RUN, (Core_IsStepping() || globalUIState == UISTATE_PAUSEMENU) ? MF_ENABLED : MF_GRAYED);
+
+		UINT ingameEnable = globalUIState == UISTATE_INGAME ? MF_ENABLED : MF_GRAYED;
+		EnableMenuItem(menu,ID_EMULATION_PAUSE, ingameEnable);
+		EnableMenuItem(menu,ID_EMULATION_STOP, ingameEnable);
+		EnableMenuItem(menu,ID_EMULATION_RESET, ingameEnable);
+
+		UINT menuEnable = globalUIState == UISTATE_MENU ? MF_ENABLED : MF_GRAYED;
+		EnableMenuItem(menu,ID_FILE_LOAD, menuEnable);
+		EnableMenuItem(menu,ID_FILE_LOAD_MEMSTICK, menuEnable);
+		EnableMenuItem(menu,ID_FILE_SAVESTATEFILE, !menuEnable);
+		EnableMenuItem(menu,ID_FILE_LOADSTATEFILE, !menuEnable);
+		EnableMenuItem(menu,ID_FILE_QUICKSAVESTATE, !menuEnable);
+		EnableMenuItem(menu,ID_FILE_QUICKLOADSTATE, !menuEnable);
+		EnableMenuItem(menu,ID_CPU_DYNAREC, menuEnable);
+		EnableMenuItem(menu,ID_CPU_INTERPRETER, menuEnable);
+		EnableMenuItem(menu,ID_EMULATION_STOP, !menuEnable);
+	}
 
 	// Message handler for about box.
 	LRESULT CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
@@ -746,54 +1098,6 @@ namespace MainWindow
 		return FALSE;
 	}
 
-	const char *controllist[] = {
-		"Start\tSpace",
-		"Select\tV",
-		"Square\tA",
-		"Triangle\tS",
-		"Circle\tX",
-		"Cross\tZ",
-		"Left Trigger\tQ",
-		"Right Trigger\tW",
-		"Up\tArrow Up",
-		"Down\tArrow Down",
-		"Left\tArrow Left",
-		"Right\tArrow Right",
-		"Analog Up\tI",
-		"Analog Down\tK",
-		"Analog Left\tJ",
-		"Analog Right\tL",
-		"Rapid Fire\tShift",
-	};
-	// Message handler for about box.
-	LRESULT CALLBACK Controls(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
-	{
-		switch (message)
-		{
-		case WM_INITDIALOG:
-			W32Util::CenterWindow(hDlg);
-			{
-				// TODO: connect to keyboard device instead
-				HWND list = GetDlgItem(hDlg, IDC_LISTCONTROLS);
-				int stops[1] = {80};
-				SendMessage(list, LB_SETTABSTOPS, 1, (LPARAM)stops);
-				for (int i = 0; i < sizeof(controllist)/sizeof(controllist[0]); i++) {
-					SendMessage(list, LB_INSERTSTRING, -1, (LPARAM)controllist[i]);
-				}
-			}
-			return TRUE;
-
-		case WM_COMMAND:
-			if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) 
-			{
-				EndDialog(hDlg, LOWORD(wParam));
-				return TRUE;
-			}
-			break;
-		}
-		return FALSE;
-	}
-
 	void Update()
 	{
 		InvalidateRect(hwndDisplay,0,0);
@@ -805,6 +1109,7 @@ namespace MainWindow
 	{
 		InvalidateRect(hwndDisplay,0,0);
 	}
+
 	void _ViewNormal(HWND hWnd)
 	{
 		// put caption and border styles back
@@ -825,7 +1130,9 @@ namespace MainWindow
 
 		// reset full screen indicator
 		g_bFullScreen = FALSE;
+		CorrectCursor();
 		ResizeDisplay();
+		ShowOwnedPopups(hwndMain, TRUE);
 	}
 
 	void _ViewFullScreen(HWND hWnd)
@@ -851,7 +1158,9 @@ namespace MainWindow
 
 		// set full screen indicator
 		g_bFullScreen = TRUE;
+		CorrectCursor();
 		ResizeDisplay();
+		ShowOwnedPopups(hwndMain, FALSE);
 	}
 
 	void SetPlaying(const char *text)
@@ -867,15 +1176,9 @@ namespace MainWindow
 
 	void SaveStateActionFinished(bool result, void *userdata)
 	{
-		// TODO: Improve messaging?
 		if (!result)
-			MessageBox(0, "Savestate failure.  Please try again later.", "Sorry", MB_OK);
+			MessageBox(0, "Savestate failure.  Using savestates between different PPSSPP versions is not supported.", "Sorry", MB_OK);
 		SetCursor(LoadCursor(0, IDC_ARROW));
-	}
-
-	void SetNextState(CoreState state)
-	{
-		nextState = state;
 	}
 
 	HINSTANCE GetHInstance()

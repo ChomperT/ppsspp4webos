@@ -13,6 +13,7 @@
 
 #include "../../globals.h"
 #include "Debugger_Disasm.h"
+#include "DebuggerShared.h"
 
 #include "../main.h"
 
@@ -34,7 +35,7 @@ void CtrlRegisterList::init()
     wc.hIcon          = 0;
     wc.lpszMenuName   = 0;
     wc.hbrBackground  = (HBRUSH)GetSysColorBrush(COLOR_WINDOW);
-    wc.style          = 0;
+    wc.style          = CS_DBLCLKS;
     wc.cbClsExtra     = 0;
 	wc.cbWndExtra     = sizeof( CtrlRegisterList * );
     wc.hIconSm        = 0;
@@ -83,12 +84,16 @@ LRESULT CALLBACK CtrlRegisterList::wndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 		return FALSE;
 	case WM_KEYDOWN:
 		ccp->onKeyDown(wParam,lParam);
-		break;
+		return 0;
+	case WM_KEYUP:
+		if (wParam == VK_CONTROL) ccp->ctrlDown = false;
+		return 0;
 	case WM_LBUTTONDOWN: SetFocus(hwnd); lmbDown=true; ccp->onMouseDown(wParam,lParam,1); break;
 	case WM_RBUTTONDOWN: rmbDown=true; ccp->onMouseDown(wParam,lParam,2); break;
 	case WM_MOUSEMOVE:   ccp->onMouseMove(wParam,lParam,(lmbDown?1:0) | (rmbDown?2:0)); break;
 	case WM_LBUTTONUP:   lmbDown=false; ccp->onMouseUp(wParam,lParam,1); break;
 	case WM_RBUTTONUP:   rmbDown=false; ccp->onMouseUp(wParam,lParam,2); break;
+	case WM_LBUTTONDBLCLK:	ccp->editRegisterValue(); break;
 	case WM_SETFOCUS:
 		SetFocus(hwnd);
 		ccp->hasFocus=true;
@@ -98,6 +103,8 @@ LRESULT CALLBACK CtrlRegisterList::wndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 		ccp->hasFocus=false;
 		ccp->redraw();
 		break;
+	case WM_GETDLGCODE:	// want chars so that we can return 0 on key press and supress the beeping sound
+		return DLGC_WANTARROWS|DLGC_WANTCHARS;
     default:
         break;
     }
@@ -191,7 +198,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 		SelectObject(hdc,i==category?pcBrush:nullBrush);
 		Rectangle(hdc,width*i/nc,0,width*(i+1)/nc,rowHeight);
 		const TCHAR *name = cpu->GetCategoryName(i);
-		TextOut(hdc,width*i/nc,1,name,strlen(name));
+		TextOut(hdc,width*i/nc,1,name,(int)strlen(name));
 	}
 
 	int numRows=rect.bottom/rowHeight;
@@ -224,11 +231,11 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 		// Check for any changes in the registers.
 		if (lastPC != cpu->GetPC())
 		{
-			for (int i = 0, n = cpu->GetNumRegsInCategory(0); i < n; ++i)
+			for (int j = 0, n = cpu->GetNumRegsInCategory(0); j < n; ++j)
 			{
-				u32 v = cpu->GetRegValue(0, i);
-				changedCat0Regs[i] = v != lastCat0Values[i];
-				lastCat0Values[i] = v;
+				u32 v = cpu->GetRegValue(0, j);
+				changedCat0Regs[j] = v != lastCat0Values[j];
+				lastCat0Values[j] = v;
 			}
 			lastPC = cpu->GetPC();
 		}
@@ -238,9 +245,9 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 		if (i<cpu->GetNumRegsInCategory(category))
 		{
 			char temp[256];
-			sprintf(temp,"%s",cpu->GetRegName(category,i));
+			int temp_len = sprintf(temp,"%s",cpu->GetRegName(category,i));
 			SetTextColor(hdc,0x600000);
-			TextOut(hdc,17,rowY1,temp,strlen(temp));
+			TextOut(hdc,17,rowY1,temp,temp_len);
 			SetTextColor(hdc,0x000000);
 
 			cpu->PrintRegValue(category,i,temp);
@@ -248,7 +255,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 				SetTextColor(hdc, 0x0000FF);
 			else
 				SetTextColor(hdc,0x004000);
-			TextOut(hdc,77,rowY1,temp,strlen(temp));
+			TextOut(hdc,77,rowY1,temp,(int)strlen(temp));
 		}
 
 
@@ -297,6 +304,12 @@ void CtrlRegisterList::onKeyDown(WPARAM wParam, LPARAM lParam)
 	GetClientRect(this->wnd, &rect);
 	int page=(rect.bottom/rowHeight)/2-1;
 
+	if (ctrlDown && tolower(wParam) == 'c')
+	{
+		copyRegisterValue();
+		return;
+	}
+
 	switch (wParam & 0xFFFF)
 	{
 	case VK_DOWN:
@@ -311,6 +324,9 @@ void CtrlRegisterList::onKeyDown(WPARAM wParam, LPARAM lParam)
 	case VK_PRIOR:
 		selection-=4;
 		break;
+	case VK_CONTROL:
+		ctrlDown = true;
+		break;
 	default:
 		return;
 	}
@@ -324,6 +340,41 @@ void CtrlRegisterList::redraw()
 	UpdateWindow(wnd); 
 }
 
+void CtrlRegisterList::copyRegisterValue()
+{
+	int cat = category;
+	int reg = selection;
+	if (selection >= cpu->GetNumRegsInCategory(cat))
+		return;
+	u32 val = cpu->GetRegValue(cat,reg);	
+	
+	char temp[24];
+	sprintf(temp,"%08X",val);
+	W32Util::CopyTextToClipboard(wnd,temp);
+}
+
+void CtrlRegisterList::editRegisterValue()
+{
+	int cat = category;
+	int reg = selection;
+	if (selection >= cpu->GetNumRegsInCategory(cat))
+		return;
+	u32 val = cpu->GetRegValue(cat,reg);
+
+	
+	char temp[256];
+	sprintf(temp,"%08X",val);
+	if (InputBox_GetString(GetModuleHandle(NULL),wnd,"Set new value",temp,temp))
+	{
+		if (parseExpression(temp,cpu,val) == false)
+		{
+			displayExpressionError(wnd);
+		} else {
+			cpu->SetRegValue(cat,reg,val);
+			redraw();
+		}
+	}
+}
 
 void CtrlRegisterList::onMouseDown(WPARAM wParam, LPARAM lParam, int button)
 {
@@ -387,20 +438,10 @@ void CtrlRegisterList::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 					disasmWindow[i]->Goto(val);
 			break;
 		case ID_REGLIST_COPYVALUE:
-			{
-				char temp[24];
-				sprintf(temp,"%08x",val);
-				W32Util::CopyTextToClipboard(wnd,temp);
-			}
+			copyRegisterValue();
 			break;
 		case ID_REGLIST_CHANGE:
-			{
-				if (InputBox_GetHex(GetModuleHandle(NULL),wnd,"Set new value",val,val))
-				{
-					cpu->SetRegValue(cat,reg,val);
-					redraw();
-				}
-			}
+			editRegisterValue();
 			break;
 		}
 		return;

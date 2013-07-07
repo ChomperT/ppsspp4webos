@@ -20,6 +20,61 @@
 #include "GPUState.h"
 #include "ge_constants.h"
 
+void GeDescribeVertexType(u32 op, char *buffer, int len) {
+	bool through = (op & GE_VTYPE_THROUGH_MASK) == GE_VTYPE_THROUGH;
+	int tc = (op & GE_VTYPE_TC_MASK) >> GE_VTYPE_TC_SHIFT;
+	int col = (op & GE_VTYPE_COL_MASK) >> GE_VTYPE_COL_SHIFT;
+	int nrm = (op & GE_VTYPE_NRM_MASK) >> GE_VTYPE_NRM_SHIFT;
+	int pos = (op & GE_VTYPE_POS_MASK) >> GE_VTYPE_POS_SHIFT;
+	int weight = (op & GE_VTYPE_WEIGHT_MASK) >> GE_VTYPE_WEIGHT_SHIFT;
+	int weightCount = (op & GE_VTYPE_WEIGHTCOUNT_MASK) >> GE_VTYPE_WEIGHTCOUNT_SHIFT;
+	int morphCount = (op & GE_VTYPE_MORPHCOUNT_MASK) >> GE_VTYPE_MORPHCOUNT_SHIFT;
+	int idx = (op & GE_VTYPE_IDX_MASK) >> GE_VTYPE_IDX_SHIFT;
+
+	static const char *colorNames[] = {
+		NULL,
+		"unsupported1",
+		"unsupported2",
+		"unsupported3",
+		"BGR 565",
+		"ABGR 1555",
+		"ABGR 4444",
+		"ABGR 8888",
+	};
+	static const char *typeNames[] = {
+		NULL,
+		"u8",
+		"u16",
+		"float",
+	};
+
+	char *w = buffer, *end = buffer + len;
+	if (through)
+		w += snprintf(w, end - w, "through, ");
+	if (typeNames[tc])
+		w += snprintf(w, end - w, "%s UVs, ", typeNames[tc]);
+	if (colorNames[col])
+		w += snprintf(w, end - w, "%s colors, ", colorNames[col]);
+	if (typeNames[nrm])
+		w += snprintf(w, end - w, "%s normals, ", typeNames[nrm]);
+	if (typeNames[pos])
+		w += snprintf(w, end - w, "%s coords, ", typeNames[pos]);
+	if (typeNames[weight])
+		w += snprintf(w, end - w, "%s weights (%d), ", typeNames[weight], weightCount);
+	else if (weightCount > 0)
+		w += snprintf(w, end - w, "unknown weights (%d), ", weightCount);
+	if (morphCount > 0)
+		w += snprintf(w, end - w, "%d morphs, ", morphCount);
+	if (typeNames[idx])
+		w += snprintf(w, end - w, "%s indexes, ", typeNames[idx]);
+
+	if (w < buffer + 2)
+		snprintf(buffer, len, "none");
+	// Otherwise, get rid of the pesky trailing comma.
+	else
+		w[-2] = '\0';
+}
+
 void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 	u32 cmd = op >> 24;
 	u32 data = op & 0xFFFFFF;
@@ -27,16 +82,23 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 	// Handle control and drawing commands here directly. The others we delegate.
 	switch (cmd)
 	{
-	case GE_CMD_BASE:
-		sprintf(buffer, "BASE: %06x", data & 0xFFFFFF);
+	case GE_CMD_NOP:
+		if (data != 0)
+			sprintf(buffer, "NOP: %06x", data);
+		else
+			sprintf(buffer, "NOP");
 		break;
 
-	case GE_CMD_VADDR:		/// <<8????
-		sprintf(buffer, "VADDR: %06x", gstate_c.vertexAddr);
+	case GE_CMD_BASE:
+		sprintf(buffer, "BASE: %06x", data);
+		break;
+
+	case GE_CMD_VADDR:
+		sprintf(buffer, "VADDR: %06x => %08x", data, gstate_c.getRelativeAddress(data));
 		break;
 
 	case GE_CMD_IADDR:
-		sprintf(buffer, "IADDR: %06x", gstate_c.indexAddr);
+		sprintf(buffer, "IADDR: %06x => %08x", data, gstate_c.getRelativeAddress(data));
 		break;
 
 	case GE_CMD_PRIM:
@@ -52,7 +114,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 				"TRIANGLE_FAN",
 				"RECTANGLES",
 			};
-			sprintf(buffer, "DrawPrim type: %s count: %i vaddr= %08x, iaddr= %08x", type < 7 ? types[type] : "INVALID", count, gstate_c.vertexAddr, gstate_c.indexAddr);
+			if (gstate.vertType & GE_VTYPE_IDX_MASK)
+				sprintf(buffer, "DrawPrim indexed type: %s count: %i vaddr= %08x, iaddr= %08x", type < 7 ? types[type] : "INVALID", count, gstate_c.vertexAddr, gstate_c.indexAddr);
+			else
+				sprintf(buffer, "DrawPrim type: %s count: %i vaddr= %08x", type < 7 ? types[type] : "INVALID", count, gstate_c.vertexAddr);
 		}
 		break;
 
@@ -61,7 +126,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		{
 			int bz_ucount = data & 0xFF;
 			int bz_vcount = (data >> 8) & 0xFF;
-			sprintf(buffer, "DRAW BEZIER: %i x %i", bz_ucount, bz_vcount);
+			if (data & 0xFF0000)
+				sprintf(buffer, "DRAW BEZIER: %i x %i (extra %x)", bz_ucount, bz_vcount, data >> 16);
+			else
+				sprintf(buffer, "DRAW BEZIER: %i x %i", bz_ucount, bz_vcount);
 		}
 		break;
 
@@ -71,7 +139,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 			int sp_vcount = (data >> 8) & 0xFF;
 			int sp_utype = (data >> 16) & 0x3;
 			int sp_vtype = (data >> 18) & 0x3;
-			sprintf(buffer, "DRAW SPLINE: %i x %i, %i x %i", sp_ucount, sp_vcount, sp_utype, sp_vtype);
+			if (data & 0xF00000)
+				sprintf(buffer, "DRAW SPLINE: %i x %i, %i x %i (extra %x)", sp_ucount, sp_vcount, sp_utype, sp_vtype, data >> 20);
+			else
+				sprintf(buffer, "DRAW SPLINE: %i x %i, %i x %i", sp_ucount, sp_vcount, sp_utype, sp_vtype);
 		}
 		break;
 
@@ -91,7 +162,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_RET:
-		sprintf(buffer, "CMD RET");
+		if (data)
+			sprintf(buffer, "CMD RET: %06x", data);
+		else
+			sprintf(buffer, "CMD RET");
 		break;
 
 	case GE_CMD_SIGNAL:
@@ -103,57 +177,64 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_END:
-		sprintf(buffer, "CMD END");
 		switch (prev >> 24)
 		{
 		case GE_CMD_SIGNAL:
 			{
+				sprintf(buffer, "CMD END - ");
 				// TODO: see http://code.google.com/p/jpcsp/source/detail?r=2935#
 				int behaviour = (prev >> 16) & 0xFF;
 				int signal = prev & 0xFFFF;
-				int enddata = data & 0xFFFF;
+				int enddata = data & 0xFFFFFF;
 				// We should probably defer to sceGe here, no sense in implementing this stuff in every GPU
 				switch (behaviour) {
-				case 1:  // Signal with Wait
-					sprintf(buffer, "Signal with Wait UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
+				case 1:
+					sprintf(buffer, "Signal with wait. signal/end: %04x %04x", signal, enddata);
 					break;
 				case 2:
 					sprintf(buffer, "Signal without wait. signal/end: %04x %04x", signal, enddata);
 					break;
 				case 3:
-					sprintf(buffer, "Signal with Pause UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
+					sprintf(buffer, "Signal with pause. signal/end: %04x %04x", signal, enddata);
+					break;
+				case 8:
+					sprintf(buffer, "Signal with sync. signal/end: %04x %04x", signal, enddata);
 					break;
 				case 0x10:
-					sprintf(buffer, "Signal with Jump UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
+					sprintf(buffer, "Signal with jump. signal/end: %04x %04x", signal, enddata);
 					break;
 				case 0x11:
-					sprintf(buffer, "Signal with Call UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
+					sprintf(buffer, "Signal with call. signal/end: %04x %04x", signal, enddata);
 					break;
 				case 0x12:
-					sprintf(buffer, "Signal with Return UNIMPLEMENTED! signal/end: %04x %04x", signal, enddata);
+					sprintf(buffer, "Signal with return. signal/end: %04x %04x", signal, enddata);
 					break;
 				default:
-					sprintf(buffer, "UNKNOWN Signal UNIMPLEMENTED %i ! signal/end: %04x %04x", behaviour, signal, enddata);
+					sprintf(buffer, "UNKNOWN Signal UNIMPLEMENTED %i! signal/end: %04x %04x", behaviour, signal, enddata);
 					break;
 				}
 			}
 			break;
 		case GE_CMD_FINISH:
+			if (data)
+				sprintf(buffer, "CMD END: %06x", data);
+			else
+				sprintf(buffer, "CMD END");
 			break;
 		default:
-			sprintf(buffer, "Ah, not finished: %06x", prev & 0xFFFFFF);
+			sprintf(buffer, "CMD END: %06x, not finished (%08x)", data, prev);
 			break;
 		}
 		break;
 
 	case GE_CMD_BJUMP:
 		// bounding box jump. Let's just not jump, for now.
-		sprintf(buffer, "BBOX JUMP - unimplemented");
+		sprintf(buffer, "BBOX JUMP - unimplemented: %06x", data);
 		break;
 
 	case GE_CMD_BOUNDINGBOX:
 		// bounding box test. Let's do nothing.
-		sprintf(buffer, "BBOX TEST - unimplemented");
+		sprintf(buffer, "BBOX TEST - unimplemented: %06x", data);
 		break;
 
 	case GE_CMD_ORIGIN:
@@ -161,7 +242,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_VERTEXTYPE:
-		sprintf(buffer, "SetVertexType: %06x", data);
+		{
+			int len = sprintf(buffer, "SetVertexType: ");
+			GeDescribeVertexType(op, buffer + len, 256 - len);
+		}
 		break;
 
 	case GE_CMD_OFFSETADDR:
@@ -172,8 +256,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		{
 			int x1 = data & 0x3ff;
 			int y1 = data >> 10;
-			//topleft
-			sprintf(buffer, "Region TL: %d %d", x1, y1);
+			if (data & 0xF00000)
+				sprintf(buffer, "Region TL: %d %d (extra %x)", x1, y1, data >> 20);
+			else
+				sprintf(buffer, "Region TL: %d %d", x1, y1);
 		}
 		break;
 
@@ -181,16 +267,19 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		{
 			int x2 = data & 0x3ff;
 			int y2 = data >> 10;
-			sprintf(buffer, "Region BR: %d %d", x2, y2);
+			if (data & 0xF00000)
+				sprintf(buffer, "Region BR: %d %d (extra %x)", x2, y2, data >> 20);
+			else
+				sprintf(buffer, "Region BR: %d %d", x2, y2);
 		}
 		break;
 
 	case GE_CMD_CLIPENABLE:
-		sprintf(buffer, "Clip Enable: %i", data);
+		sprintf(buffer, "Clip enable: %i", data);
 		break;
 
 	case GE_CMD_CULLFACEENABLE:
-		sprintf(buffer, "CullFace Enable: %i", data);
+		sprintf(buffer, "CullFace enable: %i", data);
 		break;
 
 	case GE_CMD_TEXTUREMAPENABLE:
@@ -202,11 +291,11 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_FOGENABLE:
-		sprintf(buffer, "Fog Enable: %i", data);
+		sprintf(buffer, "Fog enable: %i", data);
 		break;
 
 	case GE_CMD_DITHERENABLE:
-		sprintf(buffer, "Dither Enable: %i", data);
+		sprintf(buffer, "Dither enable: %i", data);
 		break;
 
 	case GE_CMD_OFFSETX:
@@ -218,33 +307,39 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_TEXSCALEU:
-		sprintf(buffer, "Texture U Scale: %f", gstate_c.uScale);
+		sprintf(buffer, "Texture U scale: %f", getFloat24(data));
 		break;
 
 	case GE_CMD_TEXSCALEV:
-		sprintf(buffer, "Texture V Scale: %f", gstate_c.vScale);
+		sprintf(buffer, "Texture V scale: %f", getFloat24(data));
 		break;
 
 	case GE_CMD_TEXOFFSETU:
-		sprintf(buffer, "Texture U Offset: %f", gstate_c.uOff);
+		sprintf(buffer, "Texture U offset: %f", getFloat24(data));
 		break;
 
 	case GE_CMD_TEXOFFSETV:
-		sprintf(buffer, "Texture V Offset: %f", gstate_c.vOff);
+		sprintf(buffer, "Texture V offset: %f", getFloat24(data));
 		break;
 
 	case GE_CMD_SCISSOR1:
 		{
 			int x1 = data & 0x3ff;
 			int y1 = data >> 10;
-			sprintf(buffer, "Scissor TL: %i, %i", x1,y1);
+			if (data & 0xF00000)
+				sprintf(buffer, "Scissor TL: %i, %i (extra %x)", x1, y1, data >> 20);
+			else
+				sprintf(buffer, "Scissor TL: %i, %i", x1, y1);
 		}
 		break;
 	case GE_CMD_SCISSOR2:
 		{
 			int x2 = data & 0x3ff;
 			int y2 = data >> 10;
-			sprintf(buffer, "Scissor BR: %i, %i", x2, y2);
+			if (data & 0xF00000)
+				sprintf(buffer, "Scissor BR: %i, %i (extra %x)", x2, y2, data >> 20);
+			else
+				sprintf(buffer, "Scissor BR: %i, %i", x2, y2);
 		}
 		break;
 
@@ -265,7 +360,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 	case GE_CMD_FRAMEBUFPTR:
 		{
 			u32 ptr = op & 0xFFE000;
-			sprintf(buffer, "FramebufPtr: %08x", ptr);
+			if (data & ~0xFFE000)
+				sprintf(buffer, "FramebufPtr: %08x (extra %x)", ptr, data);
+			else
+				sprintf(buffer, "FramebufPtr: %08x", ptr);
 		}
 		break;
 
@@ -276,7 +374,7 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_FRAMEBUFPIXFORMAT:
-		sprintf(buffer, "FramebufPixeFormat: %i", data);
+		sprintf(buffer, "FramebufPixelFormat: %i", data);
 		break;
 
 	case GE_CMD_TEXADDR0:
@@ -311,7 +409,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 
 	case GE_CMD_LOADCLUT:
 		// This could be used to "dirty" textures with clut.
-		sprintf(buffer, "Clut load");
+		if (data)
+			sprintf(buffer, "Clut load: %06x", data);
+		else
+			sprintf(buffer, "Clut load");
 		break;
 
 	case GE_CMD_TEXMAPMODE:
@@ -324,53 +425,71 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 
 	case GE_CMD_CLUTFORMAT:
 		{
-			sprintf(buffer, "Clut format: %06x", data);
+			const char *clutformats[] = {
+				"BGR 5650",
+				"ABGR 1555",
+				"ABGR 4444",
+				"ABGR 8888",
+			};
+			sprintf(buffer, "Clut format: %06x (%s)", data, clutformats[data & 3]);
 		}
 		break;
 
 	case GE_CMD_TRANSFERSRC:
 		{
-			sprintf(buffer, "Block Transfer Src: %06x", data);
+			sprintf(buffer, "Block transfer src: %06x", data);
 			// Nothing to do, the next one prints
 		}
 		break;
 
 	case GE_CMD_TRANSFERSRCW:
 		{
-			u32 xferSrc = gstate.transfersrc | ((data&0xFF0000)<<8);
+			u32 xferSrc = (gstate.transfersrc & 0x00FFFFFF) | ((data & 0xFF0000) << 8);
 			u32 xferSrcW = gstate.transfersrcw & 1023;
-			sprintf(buffer, "Block Transfer Src: %08x	W: %i", xferSrc, xferSrcW);
+			if (data & ~0xFF03FF)
+				sprintf(buffer, "Block transfer src: %08x	W: %i (extra %x)", xferSrc, xferSrcW, data);
+			else
+				sprintf(buffer, "Block transfer src: %08x	W: %i", xferSrc, xferSrcW);
 			break;
 		}
 
 	case GE_CMD_TRANSFERDST:
 		{
 			// Nothing to do, the next one prints
-			sprintf(buffer, "Block Transfer Dst: %06x", data);
+			sprintf(buffer, "Block transfer dst: %06x", data);
 		}
 		break;
 
 	case GE_CMD_TRANSFERDSTW:
 		{
-			u32 xferDst= gstate.transferdst | ((data&0xFF0000)<<8);
+			u32 xferDst = (gstate.transferdst & 0x00FFFFFF) | ((data & 0xFF0000) << 8);
 			u32 xferDstW = gstate.transferdstw & 1023;
-			sprintf(buffer, "Block Transfer Dest: %08x	W: %i", xferDst, xferDstW);
+			if (data & ~0xFF03FF)
+				sprintf(buffer, "Block transfer dest: %08x	W: %i (extra %x)", xferDst, xferDstW, data);
+			else
+				sprintf(buffer, "Block transfer dest: %08x	W: %i", xferDst, xferDstW);
 			break;
 		}
 
 	case GE_CMD_TRANSFERSRCPOS:
 		{
-			u32 x = (data & 1023)+1;
-			u32 y = ((data>>10) & 1023)+1;
-			sprintf(buffer, "Block Transfer Src Rect TL: %i, %i", x, y);
+			u32 x = (data & 1023);
+			u32 y = ((data>>10) & 1023);
+			if (data & 0xF00000)
+				sprintf(buffer, "Block transfer src rect TL: %i, %i (extra %x)", x, y, data >> 20);
+			else
+				sprintf(buffer, "Block transfer src rect TL: %i, %i", x, y);
 			break;
 		}
 
 	case GE_CMD_TRANSFERDSTPOS:
 		{
-			u32 x = (data & 1023)+1;
-			u32 y = ((data>>10) & 1023)+1;
-			sprintf(buffer, "Block Transfer Dest Rect TL: %i, %i", x, y);
+			u32 x = (data & 1023);
+			u32 y = ((data>>10) & 1023);
+			if (data & 0xF00000)
+				sprintf(buffer, "Block transfer dest rect TL: %i, %i (extra %x)", x, y, data >> 20);
+			else
+				sprintf(buffer, "Block transfer dest rect TL: %i, %i", x, y);
 			break;
 		}
 
@@ -378,15 +497,19 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		{
 			u32 w = (data & 1023)+1;
 			u32 h = ((data>>10) & 1023)+1;
-			sprintf(buffer, "Block Transfer Rect Size: %i x %i", w, h);
+			if (data & 0xF00000)
+				sprintf(buffer, "Block transfer rect size: %i x %i (extra %x)", w, h, data >> 20);
+			else
+				sprintf(buffer, "Block transfer rect size: %i x %i", w, h);
 			break;
 		}
 
 	case GE_CMD_TRANSFERSTART:  // Orphis calls this TRXKICK
-		{
-			sprintf(buffer, "Block Transfer Start");
-			break;
-		}
+		if (data)
+			sprintf(buffer, "Block transfer start: %x", data);
+		else
+			sprintf(buffer, "Block transfer start");
+		break;
 
 	case GE_CMD_TEXSIZE0:
 	case GE_CMD_TEXSIZE1:
@@ -399,49 +522,50 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		{
 			int w = 1 << (data & 0xf);
 			int h = 1 << ((data>>8) & 0xf);
-			sprintf(buffer, "Texture Size %i: %06x, width : %d, height : %d", cmd - GE_CMD_TEXSIZE0, data, w, h);
+			sprintf(buffer, "Texture size %i: %06x, width : %d, height : %d", cmd - GE_CMD_TEXSIZE0, data, w, h);
 		}
 		break;
 
 	case GE_CMD_ZBUFPTR:
 		{
 			u32 ptr = op & 0xFFE000;
-			sprintf(buffer, "Zbuf Ptr: %06x", ptr);
+			if (data & ~0xFFE000)
+				sprintf(buffer, "Zbuf ptr: %06x (extra %x)", ptr, data);
+			else
+				sprintf(buffer, "Zbuf ptr: %06x", ptr);
 		}
 		break;
 
 	case GE_CMD_ZBUFWIDTH:
-		{
-			sprintf(buffer, "Zbuf Width: %06x", data);
-		}
+		sprintf(buffer, "Zbuf width: %06x", data);
 		break;
 
 	case GE_CMD_AMBIENTCOLOR:
-		sprintf(buffer, "Ambient Color: %06x",	data);
+		sprintf(buffer, "Ambient color: %06x", data);
 		break;
 
 	case GE_CMD_AMBIENTALPHA:
-		sprintf(buffer, "Ambient Alpha: %06x",	data);
+		sprintf(buffer, "Ambient alpha: %06x", data);
 		break;
 
 	case GE_CMD_MATERIALAMBIENT:
-		sprintf(buffer, "Material Ambient Color: %06x",	data);
+		sprintf(buffer, "Material ambient color: %06x", data);
 		break;
 
 	case GE_CMD_MATERIALDIFFUSE:
-		sprintf(buffer, "Material Diffuse Color: %06x",	data);
+		sprintf(buffer, "Material diffuse color: %06x", data);
 		break;
 
 	case GE_CMD_MATERIALEMISSIVE:
-		sprintf(buffer, "Material Emissive Color: %06x",	data);
+		sprintf(buffer, "Material emissive color: %06x", data);
 		break;
 
 	case GE_CMD_MATERIALSPECULAR:
-		sprintf(buffer, "Material Specular Color: %06x",	data);
+		sprintf(buffer, "Material specular color: %06x", data);
 		break;
 
 	case GE_CMD_MATERIALALPHA:
-		sprintf(buffer, "Material Alpha Color: %06x",	data);
+		sprintf(buffer, "Material alpha color: %06x", data);
 		break;
 
 	case GE_CMD_MATERIALSPECULARCOEF:
@@ -449,11 +573,17 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_SHADEMODE:
-		sprintf(buffer, "Shade: %06x (%s)", data, data ? "gouraud" : "flat");
+		if (data & ~1)
+			sprintf(buffer, "Shade: %06x (%s, extra %x)", data, data ? "gouraud" : "flat", data);
+		else
+			sprintf(buffer, "Shade: %06x (%s)", data, data ? "gouraud" : "flat");
 		break;
 
 	case GE_CMD_LIGHTMODE:
-		sprintf(buffer, "Lightmode: %06x (%s)", data, data ? "separate spec" : "single color");
+		if (data & ~1)
+			sprintf(buffer, "Lightmode: %06x (%s, extra %x)", data, data ? "separate spec" : "single color", data);
+		else
+			sprintf(buffer, "Lightmode: %06x (%s)", data, data ? "separate spec" : "single color");
 		break;
 
 	case GE_CMD_LIGHTTYPE0:
@@ -543,14 +673,17 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_CULL:
-		sprintf(buffer, "cull: %06x", data);
+		sprintf(buffer, "Cull: %06x", data);
 		break;
 
 	case GE_CMD_PATCHDIVISION:
 		{
 			int patch_div_s = data & 0xFF;
 			int patch_div_t = (data >> 8) & 0xFF;
-			sprintf(buffer, "Patch subdivision: %i x %i", patch_div_s, patch_div_t);
+			if (data & 0xFF0000)
+				sprintf(buffer, "Patch subdivision: %i x %i (extra %x)", patch_div_s, patch_div_t, data & 0xFF0000);
+			else
+				sprintf(buffer, "Patch subdivision: %i x %i", patch_div_s, patch_div_t);
 		}
 		break;
 
@@ -567,7 +700,7 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_MATERIALUPDATE:
-		sprintf(buffer, "Material Update: %d", data);
+		sprintf(buffer, "Material update: %d", data);
 		break;
 
 
@@ -575,8 +708,25 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 	//	CLEARING
 	//////////////////////////////////////////////////////////////////
 	case GE_CMD_CLEARMODE:
-		// If it becomes a performance problem, check diff&1
-		sprintf(buffer, "Clear mode: %06x", data);
+		{
+			const char *clearModes[] = {
+				"on",
+				"on, color",
+				"on, alpha/stencil",
+				"on, color, alpha/stencil",
+				"on, depth",
+				"on, color, depth",
+				"on, alpha/stencil, depth",
+				"on, color, alpha/stencil, depth",
+			};
+
+			const char *mode;
+			if (data & 1)
+				mode = clearModes[(data >> 8) & 7];
+			else
+				mode = "off";
+			sprintf(buffer, "Clear mode: %06x (%s)", data, mode);
+		}
 		break;
 
 
@@ -588,7 +738,45 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_BLENDMODE:
-		sprintf(buffer, "Blend mode: %06x", data);
+		{
+			const char *blendModes[] = {
+				"add",
+				"subtract",
+				"reverse subtract",
+				"min",
+				"max",
+				"abs subtract",
+				"unsupported1",
+				"unsupported2",
+			};
+			const char *blendFactors[] = {
+				"a",
+				"1.0 - a",
+				"src.a",
+				"1.0 - src.a",
+				"dst.a",
+				"1.0 - dst.a",
+				"2.0 * src.a",
+				"1.0 - 2.0 * src.a",
+				"2.0 * dst.a",
+				"1.0 - 2.0 * dst.a",
+				"fixed",
+				"fixed2",
+				"fixed3",
+				"fixed4",
+				"fixed5",
+				"fixed6",
+			};
+
+			const char *blendFactorA = blendFactors[(data >> 0) & 0xF];
+			const char *blendFactorB = blendFactors[(data >> 4) & 0xF];
+			const char *blendMode = blendModes[(data >> 8) & 0x7];
+
+			if (data & ~0xFF0007FF)
+				sprintf(buffer, "Blend mode: %s %s, %s (extra: %06x)", blendMode, blendFactorA, blendFactorB, data & ~0xFF0007FF);
+			else
+				sprintf(buffer, "Blend mode: %s %s, %s", blendMode, blendFactorA, blendFactorB);
+		}
 		break;
 
 	case GE_CMD_BLENDFIXEDA:
@@ -604,7 +792,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_ALPHATEST:
-		sprintf(buffer, "Alpha test settings");
+		{
+			const char *alphaTestFuncs[] = { "NEVER", "ALWAYS", " == ", " != ", " < ", " <= ", " > ", " >= " };
+			sprintf(buffer, "Alpha test settings: %06x (%02x%s(c & %02x))", data, (data >> 8) & 0xFF, alphaTestFuncs[data & 7], (data >> 16) & 0xFF);
+		}
 		break;
 
 	case GE_CMD_ANTIALIASENABLE:
@@ -612,11 +803,11 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_PATCHCULLENABLE:
-		sprintf(buffer, "Antialias enable: %d", data);
+		sprintf(buffer, "Patch cull enable: %d", data);
 		break;
 
 	case GE_CMD_COLORTESTENABLE:
-		sprintf(buffer, "Color Test enable: %d", data);
+		sprintf(buffer, "Color test enable: %d", data);
 		break;
 
 	case GE_CMD_LOGICOPENABLE:
@@ -624,14 +815,32 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_TEXFUNC:
-		sprintf(buffer, "TexFunc %i", data&7);
+		{
+			const char *texfuncs[] = {
+				"modulate",
+				"decal",
+				"blend",
+				"replace",
+				"add",
+				"unsupported1",
+				"unsupported2",
+				"unsupported3",
+			};
+			if (data & ~0x10107)
+				sprintf(buffer, "TexFunc %i %s %s%s (extra %x)", data & 7, data & 0x100 ? "RGBA" : "RGB", texfuncs[data & 7], data & 0x10000 ? " color double" : "", data);
+			else
+				sprintf(buffer, "TexFunc %i %s %s%s", data & 7, data & 0x100 ? "RGBA" : "RGB", texfuncs[data & 7], data & 0x10000 ? " color double" : "");
+		}
 		break;
 
 	case GE_CMD_TEXFILTER:
 		{
 			int min = data & 7;
 			int mag = (data >> 8) & 1;
-			sprintf(buffer, "TexFilter min: %i mag: %i", min, mag);
+			if (data & ~0x107)
+				sprintf(buffer, "TexFilter min: %i mag: %i (extra %x)", min, mag, data);
+			else
+				sprintf(buffer, "TexFilter min: %i mag: %i", min, mag);
 		}
 		break;
 
@@ -640,27 +849,56 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_TEXMODE:
-		sprintf(buffer, "TexMode %08x", data);
+		sprintf(buffer, "TexMode %06x (%s, %d levels, %s)", data, data & 1 ? "swizzle" : "no swizzle", (data >> 16) & 7, (data >> 8) & 1 ? "separate cluts" : "shared clut");
 		break;
 
 	case GE_CMD_TEXFORMAT:
-		sprintf(buffer, "TexFormat %08x", data);
+		{
+			const char *texformats[] = {
+				"5650",
+				"5551",
+				"4444",
+				"8888",
+				"CLUT4",
+				"CLUT8",
+				"CLUT16",
+				"CLUT32",
+				"DXT1",
+				"DXT3",
+				"DXT5",
+				"unsupported1",
+				"unsupported2",
+				"unsupported3",
+				"unsupported4",
+				"unsupported5",
+			};
+			sprintf(buffer, "TexFormat %06x (%s)", data, texformats[data & 0xF]);
+		}
 		break;
 
 	case GE_CMD_TEXFLUSH:
-		sprintf(buffer, "TexFlush");
+		if (data)
+			sprintf(buffer, "TexFlush: %x", data);
+		else
+			sprintf(buffer, "TexFlush");
 		break;
 
 	case GE_CMD_TEXSYNC:
-		sprintf(buffer, "TexSync");
+		if (data)
+			sprintf(buffer, "TexSync: %x", data);
+		else
+			sprintf(buffer, "TexSync");
 		break;
 
 	case GE_CMD_TEXWRAP:
-		sprintf(buffer, "TexWrap %08x", data);
+		sprintf(buffer, "TexWrap %06x", data);
 		break;
 
 	case GE_CMD_TEXLEVEL:
-		sprintf(buffer, "TexWrap Mode: %i Offset: %i", data&3, data >> 16);
+		if (data & ~0xFF0003)
+			sprintf(buffer, "TexWrap mode: %i Offset: %i (extra %x)", data&3, data >> 16, data);
+		else
+			sprintf(buffer, "TexWrap mode: %i Offset: %i", data&3, data >> 16);
 		break;
 
 	case GE_CMD_FOG1:
@@ -684,15 +922,24 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 	//////////////////////////////////////////////////////////////////
 
 	case GE_CMD_ZTESTENABLE:
-		sprintf(buffer, "Z test enable: %d", data & 1);
+		if (data & ~1)
+			sprintf(buffer, "Z test enable: %d (extra %x)", data & 1, data);
+		else
+			sprintf(buffer, "Z test enable: %d", data & 1);
 		break;
 
 	case GE_CMD_STENCILOP:
-		sprintf(buffer, "Stencil op: %06x", data);
+		{
+			const char *stencilOps[] = { "KEEP", "ZERO", "REPLACE", "INVERT", "INCREMENT", "DECREMENT", "unsupported1", "unsupported2" };
+			sprintf(buffer, "Stencil op: fail=%s, pass/depthfail=%s, pass=%s", stencilOps[data & 7], stencilOps[(data >> 8) & 7], stencilOps[(data >> 16) & 7]);
+		}
 		break;
 
 	case GE_CMD_STENCILTEST:
-		sprintf(buffer, "Stencil test: %06x", data);
+		{
+			const char *zTestFuncs[] = { "NEVER", "ALWAYS", " == ", " != ", " < ", " <= ", " > ", " >= " };
+			sprintf(buffer, "Stencil test: %06x (%02x %s (c & %02x))", data, (data >> 8) & 0xFF, zTestFuncs[data & 7], (data >> 16) & 0xFF);
+		}
 		break;
 
 	case GE_CMD_STENCILTESTENABLE:
@@ -700,7 +947,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_ZTEST:
-		sprintf(buffer, "Z test mode: %i", data);
+		{
+			const char *zTestFuncs[] = { "NEVER", "ALWAYS", " == ", " != ", " < ", " <= ", " > ", " >= " };
+			sprintf(buffer, "Z test mode: %i (%s)", data, zTestFuncs[data & 7]);
+		}
 		break;
 
 	case GE_CMD_MORPHWEIGHT0:
@@ -726,7 +976,27 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_LOGICOP:
-		sprintf(buffer, "LogicOp: %06x", data);
+		{
+			const char *logicOps[] = {
+				"clear",
+				"and",
+				"reverse and",
+				"copy",
+				"inverted and",
+				"noop",
+				"xor",
+				"or",
+				"negated or",
+				"equivalence",
+				"inverted",
+				"reverse or",
+				"inverted copy",
+				"inverted or",
+				"negated and",
+				"set",
+			};
+			sprintf(buffer, "LogicOp: %06x (%s)", data, logicOps[data & 0xF]);
+		}
 		break;
 
 	case GE_CMD_ZWRITEDISABLE:
@@ -734,7 +1004,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_COLORTEST:
-		sprintf(buffer, "ColorTest: %06x", data);
+		{
+			const char *colorTests[] = {"NEVER", "ALWAYS", " == ", " != "};
+			sprintf(buffer, "ColorTest: %06x (ref%s(c & cmask))", data, colorTests[data & 3]);
+		}
 		break;
 
 	case GE_CMD_COLORREF:
@@ -754,7 +1027,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_WORLDMATRIXNUMBER:
-		sprintf(buffer, "World # %i", data & 0xF);
+		if (data & ~0xF)
+			sprintf(buffer, "World # %i (extra %x)", data & 0xF, data);
+		else
+			sprintf(buffer, "World # %i", data & 0xF);
 		break;
 
 	case GE_CMD_WORLDMATRIXDATA:
@@ -762,7 +1038,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_VIEWMATRIXNUMBER:
-		sprintf(buffer, "VIEW # %i", data & 0xF);
+		if (data & ~0xF)
+			sprintf(buffer, "VIEW # %i (extra %x)", data & 0xF, data);
+		else
+			sprintf(buffer, "VIEW # %i", data & 0xF);
 		break;
 
 	case GE_CMD_VIEWMATRIXDATA:
@@ -770,7 +1049,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_PROJMATRIXNUMBER:
-		sprintf(buffer, "PROJECTION # %i", data & 0xF);
+		if (data & ~0xF)
+			sprintf(buffer, "PROJECTION # %i (extra %x)", data & 0xF, data);
+		else
+			sprintf(buffer, "PROJECTION # %i", data & 0xF);
 		break;
 
 	case GE_CMD_PROJMATRIXDATA:
@@ -778,7 +1060,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_TGENMATRIXNUMBER:
-		sprintf(buffer, "TGEN # %i", data & 0xF);
+		if (data & ~0xF)
+			sprintf(buffer, "TGEN # %i (extra %x)", data & 0xF, data);
+		else
+			sprintf(buffer, "TGEN # %i", data & 0xF);
 		break;
 
 	case GE_CMD_TGENMATRIXDATA:
@@ -786,7 +1071,10 @@ void GeDisassembleOp(u32 pc, u32 op, u32 prev, char *buffer) {
 		break;
 
 	case GE_CMD_BONEMATRIXNUMBER:
-		sprintf(buffer, "BONE #%i", data);
+		if (data & ~0x7F)
+			sprintf(buffer, "BONE #%i (extra %x)", data & 0x7F, data);
+		else
+			sprintf(buffer, "BONE #%i", data & 0xF);
 		break;
 
 	case GE_CMD_BONEMATRIXDATA:

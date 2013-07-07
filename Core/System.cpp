@@ -15,6 +15,12 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#endif
+
 #include "MemMap.h"
 
 #include "MIPS/MIPS.h"
@@ -38,13 +44,27 @@
 #include "CoreParameter.h"
 #include "FileSystems/MetaFileSystem.h"
 #include "Loaders.h"
+#include "PSPLoaders.h"
 #include "ELF/ParamSFO.h"
 #include "../Common/LogManager.h"
 
 MetaFileSystem pspFileSystem;
 ParamSFOData g_paramSFO;
+GlobalUIState globalUIState;
 static CoreParameter coreParameter;
 static PSPMixer *mixer;
+
+// This can be read and written from ANYWHERE.
+volatile CoreState coreState = CORE_STEPPING;
+// Note: intentionally not used for CORE_NEXTFRAME.
+volatile bool coreStatePending = false;
+
+void Core_UpdateState(CoreState newState)
+{
+	if ((coreState == CORE_RUNNING || coreState == CORE_NEXTFRAME) && newState != CORE_RUNNING)
+		coreStatePending = true;
+	coreState = newState;
+}
 
 bool PSP_Init(const CoreParameter &coreParam, std::string *error_string)
 {
@@ -53,9 +73,24 @@ bool PSP_Init(const CoreParameter &coreParam, std::string *error_string)
 	coreParameter = coreParam;
 	currentCPU = &mipsr4k;
 	numCPUs = 1;
+
+	// Default memory settings
+	// Seems to be the safest place currently..
+	Memory::g_MemorySize = 0x2000000; // 32 MB of ram by default
+	g_RemasterMode = false;
+	g_DoubleTextureCoordinates = false;
+
+	std::string filename = coreParam.fileToStart;
+	EmuFileType type = Identify_File(filename);
+
+	if(type == FILETYPE_PSP_ISO || type == FILETYPE_PSP_ISO_NP)
+		InitMemoryForGameISO(filename);
+
 	Memory::Init();
 	mipsr4k.Reset();
 	mipsr4k.pc = 0;
+
+	host->AttemptLoadSymbolMap();
 
 	if (coreParameter.enableSound)
 	{
@@ -75,7 +110,7 @@ bool PSP_Init(const CoreParameter &coreParam, std::string *error_string)
 
 	// TODO: Check Game INI here for settings, patches and cheats, and modify coreParameter accordingly
 
-	if (!LoadFile(coreParameter.fileToStart.c_str(), error_string))
+	if (!LoadFile(filename, error_string) || coreState == CORE_POWERDOWN)
 	{
 		pspFileSystem.Shutdown();
 		CoreTiming::Shutdown();
@@ -86,6 +121,9 @@ bool PSP_Init(const CoreParameter &coreParam, std::string *error_string)
 		coreParameter.fileToStart = "";
 		return false;
 	}
+
+	if (coreParam.updateRecent)
+		g_Config.AddRecent(filename);
 
 	// Setup JIT here.
 	if (coreParameter.startPaused)
@@ -106,6 +144,9 @@ void PSP_Shutdown()
 
 	CoreTiming::Shutdown();
 
+	if (g_Config.bAutoSaveSymbolMap)
+		host->SaveSymbolMap();
+
 	if (coreParameter.enableSound)
 	{
 		host->ShutdownSound();
@@ -120,4 +161,33 @@ void PSP_Shutdown()
 CoreParameter &PSP_CoreParameter()
 {
 	return coreParameter;
+}
+
+
+void GetSysDirectories(std::string &memstickpath, std::string &flash0path) {
+#ifdef _WIN32
+	char path_buffer[_MAX_PATH], drive[_MAX_DRIVE] ,dir[_MAX_DIR], file[_MAX_FNAME], ext[_MAX_EXT];
+	char memstickpath_buf[_MAX_PATH];
+	char flash0path_buf[_MAX_PATH];
+
+	GetModuleFileName(NULL,path_buffer,sizeof(path_buffer));
+
+	char *winpos = strstr(path_buffer, "Windows");
+	if (winpos)
+	*winpos = 0;
+	strcat(path_buffer, "dummy.txt");
+
+	_splitpath_s(path_buffer, drive, dir, file, ext );
+
+	// Mount a couple of filesystems
+	sprintf(memstickpath_buf, "%s%smemstick\\", drive, dir);
+	sprintf(flash0path_buf, "%s%sflash0\\", drive, dir);
+
+	memstickpath = memstickpath_buf;
+	flash0path = flash0path_buf;
+#else
+	// TODO
+	memstickpath = g_Config.memCardDirectory;
+	flash0path = g_Config.flashDirectory;
+#endif
 }

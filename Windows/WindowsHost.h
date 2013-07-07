@@ -17,18 +17,20 @@
 
 #include "../Core/Host.h"
 #include "InputDevice.h"
+#include "KeyboardDevice.h"
 #include <list>
 #include <memory>
 
 class WindowsHost : public Host
 {
 public:
-	WindowsHost(HWND mainWindow, HWND displayWindow)
+	WindowsHost(HWND mainWindow, HWND displayWindow);
+
+	~WindowsHost()
 	{
-		mainWindow_ = mainWindow;
-		displayWindow_ = displayWindow;
-		input = getInputDevices();
+		UpdateConsolePosition();
 	}
+
 	void UpdateMemView();
 	void UpdateDisassembly();
 	void UpdateUI();
@@ -37,7 +39,7 @@ public:
 	void AddSymbol(std::string name, u32 addr, u32 size, int type);
 
 	bool InitGL(std::string *error_message);
-	void BeginFrame();
+	void PollControllers(InputState &input_state);
 	void ShutdownGL();
 
 	void InitSound(PMixer *mixer);
@@ -46,12 +48,18 @@ public:
 
 	bool IsDebuggingEnabled();
 	void BootDone();
-	void PrepareShutdown();
 	bool AttemptLoadSymbolMap();
+	void SaveSymbolMap();
 	void SetWindowTitle(const char *message);
 
+	std::shared_ptr<KeyboardDevice> keyboard;
+
 private:
+	void SetConsolePosition();
+	void UpdateConsolePosition();
+
 	HWND displayWindow_;
 	HWND mainWindow_;
+
 	std::list<std::shared_ptr<InputDevice>> input;
 };

@@ -4,7 +4,6 @@
 // It calls a set of methods defined in NativeApp.h. These should be implemented
 // by your game or app.
 
-
 #include <jni.h>
 #include <android/log.h>
 #include <stdlib.h>
@@ -25,21 +24,7 @@
 #include "android/native_audio.h"
 #include "gfx_es2/gl_state.h"
 
-// For Xperia Play support
-enum AndroidKeyCodes {
-	KEYCODE_BUTTON_CROSS = 23,  // trackpad or X button(Xperia Play) is pressed
-	KEYCODE_BUTTON_CIRCLE = 1004, // Special custom keycode generated from 'O' button by our java code. Or 'O' button if Alt is pressed (TODO)
-	KEYCODE_BUTTON_SQUARE = 99,  // Square button(Xperia Play) is pressed
-	KEYCODE_BUTTON_TRIANGLE = 100, // 'Triangle button(Xperia Play) is pressed
-	KEYCODE_DPAD_LEFT = 21,
-	KEYCODE_DPAD_UP = 19,
-	KEYCODE_DPAD_RIGHT = 22,
-	KEYCODE_DPAD_DOWN = 20,
-	KEYCODE_BUTTON_L1 = 102,
-	KEYCODE_BUTTON_R1 = 103,
-	KEYCODE_BUTTON_START = 108,
-	KEYCODE_BUTTON_SELECT = 109,
-};
+#include "app-android.h"
 
 static JNIEnv *jniEnvUI;
 
@@ -50,6 +35,17 @@ const bool extraLog = true;
 
 static uint32_t pad_buttons_async_set;
 static uint32_t pad_buttons_async_clear;
+static float left_joystick_x_async;
+static float left_joystick_y_async;
+static float right_joystick_x_async;
+static float right_joystick_y_async;
+static float hat_joystick_x_async;
+static float hat_joystick_y_async;
+
+static uint32_t pad_buttons_down;
+
+int optimalFramesPerBuffer = 0;
+int optimalSampleRate = 0;
 
 // Android implementation of callbacks to the Java part of the app
 void SystemToast(const char *text) {
@@ -102,7 +98,7 @@ InputState input_state;
 
 static bool renderer_inited = false;
 static bool first_lost = true;
-static bool use_native_audio = false;
+static bool use_opensl_audio = false;
 
 std::string GetJavaString(JNIEnv *env, jstring jstr)
 {
@@ -122,10 +118,17 @@ extern "C" jboolean Java_com_henrikrydgard_libnative_NativeApp_isLandscape(JNIEn
 
 // For the Back button to work right.
 extern "C" jboolean Java_com_henrikrydgard_libnative_NativeApp_isAtTopLevel(JNIEnv *env, jclass) {
+	bool isAtTop = NativeIsAtTopLevel();
 	if (extraLog) {
-		ILOG("isAtTopLevel");
+		ILOG("isAtTopLevel %i", (int)isAtTop);
 	}
-	return NativeIsAtTopLevel();
+	return isAtTop;
+}
+
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_audioConfig
+	(JNIEnv *env, jclass, jint optimalFPB, jint optimalSR) {
+	optimalFramesPerBuffer = optimalFPB;
+	optimalSampleRate = optimalSR;
 }
 
 extern "C" void Java_com_henrikrydgard_libnative_NativeApp_init
@@ -139,8 +142,16 @@ extern "C" void Java_com_henrikrydgard_libnative_NativeApp_init
 	renderer_inited = false;
 	first_lost = true;
 
+	pad_buttons_down = 0;
 	pad_buttons_async_set = 0;
 	pad_buttons_async_clear = 0;
+
+	left_joystick_x_async = 0;
+	left_joystick_y_async = 0;
+	right_joystick_x_async = 0;
+	right_joystick_y_async = 0;
+	hat_joystick_x_async = 0;
+	hat_joystick_y_async = 0;
 
 	std::string apkPath = GetJavaString(env, japkpath);
 	ILOG("NativeApp::Init: APK path: %s", apkPath.c_str());
@@ -170,30 +181,34 @@ extern "C" void Java_com_henrikrydgard_libnative_NativeApp_init
 	const char *argv[2] = {app_name.c_str(), 0};
 	NativeInit(1, argv, user_data_path.c_str(), externalDir.c_str(), installID.c_str());
 
-	use_native_audio = juseNativeAudio;
-	if (use_native_audio) {
-		AndroidAudio_Init(&NativeMix, library_path);
+	use_opensl_audio = juseNativeAudio;
+	if (use_opensl_audio) {
+		// TODO: PPSSPP doesn't support 48khz yet so let's not use that yet.
+		ILOG("Using OpenSL audio! frames/buffer: %i   optimal sr: %i   actual sr: 44100", optimalFramesPerBuffer, optimalSampleRate);
+		optimalSampleRate = 44100;
+		AndroidAudio_Init(&NativeMix, library_path, optimalFramesPerBuffer, optimalSampleRate);
 	}
 	ILOG("NativeApp.init() -- end");
 }	
 
 extern "C" void Java_com_henrikrydgard_libnative_NativeApp_resume(JNIEnv *, jclass) {
 	ILOG("NativeApp.resume() - resuming audio");
-	if (use_native_audio) {
+	if (use_opensl_audio) {
 		AndroidAudio_Resume();
 	}
 }
 
 extern "C" void Java_com_henrikrydgard_libnative_NativeApp_pause(JNIEnv *, jclass) {
 	ILOG("NativeApp.pause() - pausing audio");
-	if (use_native_audio) {
+	if (use_opensl_audio) {
 		AndroidAudio_Pause();
 	}
+	ILOG("NativeApp.pause() - paused audio");
 }
  
 extern "C" void Java_com_henrikrydgard_libnative_NativeApp_shutdown(JNIEnv *, jclass) {
 	ILOG("NativeApp.shutdown() -- begin");
- 	if (use_native_audio) {
+ 	if (use_opensl_audio) {
 		AndroidAudio_Shutdown();
 	}
 	if (renderer_inited) {
@@ -247,15 +262,22 @@ extern "C" void Java_com_henrikrydgard_libnative_NativeRenderer_displayRender(JN
 		// TODO: Look into if these locks are a perf loss
 		{
 			lock_guard guard(input_state.lock);
-			input_state.pad_buttons |= pad_buttons_async_set;
-			input_state.pad_buttons &= ~pad_buttons_async_clear;
+			pad_buttons_down |= pad_buttons_async_set;
+			pad_buttons_down &= ~pad_buttons_async_clear;
+
+			input_state.pad_buttons = pad_buttons_down;
+
 			UpdateInputState(&input_state);
 		}
 
 		{
 			lock_guard guard(input_state.lock);
-			NativeUpdate(input_state);
+			input_state.pad_lstick_x = left_joystick_x_async;
+			input_state.pad_lstick_y = left_joystick_y_async;
+			input_state.pad_rstick_x = right_joystick_x_async;
+			input_state.pad_rstick_y = right_joystick_y_async;
 		}
+		NativeUpdate(input_state);
 
 		{
 			lock_guard guard(input_state.lock);
@@ -285,7 +307,8 @@ extern "C" void Java_com_henrikrydgard_libnative_NativeRenderer_displayRender(JN
 	}
 }
 
-extern "C" void Java_com_henrikrydgard_libnative_NativeApp_audioRender(JNIEnv*	env, jclass clazz, jshortArray array) {
+// This path is not used if OpenSL ES is available.
+extern "C" jint Java_com_henrikrydgard_libnative_NativeApp_audioRender(JNIEnv*	env, jclass clazz, jshortArray array) {
 	// Too spammy
 	// ILOG("NativeApp.audioRender");
 
@@ -296,91 +319,160 @@ extern "C" void Java_com_henrikrydgard_libnative_NativeApp_audioRender(JNIEnv*	e
 	if (buf_size) {
 		short *data = env->GetShortArrayElements(array, 0);
 		int samples = buf_size / 2;
-		NativeMix(data, samples);
-		env->ReleaseShortArrayElements(array, data, 0);
+		samples = NativeMix(data, samples);
+		if (samples != 0) {
+			env->ReleaseShortArrayElements(array, data, 0);
+			return samples * 2;
+		} else {
+			env->ReleaseShortArrayElements(array, data, JNI_ABORT);
+			return 0;
+		}
 	}
+	return 0;
 }
 
 extern "C" void JNICALL Java_com_henrikrydgard_libnative_NativeApp_touch
 	(JNIEnv *, jclass, float x, float y, int code, int pointerId) {
+	// ELOG("Touch Enter %i", pointerId);
+
+	float scaledX = (int)(x * dp_xscale);	// why the (int) cast?
+	float scaledY = (int)(y * dp_yscale);
+
+	TouchInput touch;
+	touch.id = pointerId;
+	touch.x = scaledX;
+	touch.y = scaledY;
+	if (code == 1) {
+		input_state.pointer_down[pointerId] = true;
+		touch.flags = TOUCH_DOWN;
+	} else if (code == 2) {
+		input_state.pointer_down[pointerId] = false;
+		touch.flags = TOUCH_UP;
+	} else {
+		touch.flags = TOUCH_MOVE;
+	}
+	NativeTouch(touch);
+
+
 	lock_guard guard(input_state.lock);
 
 	if (pointerId >= MAX_POINTERS) {
 		ELOG("Too many pointers: %i", pointerId);
 		return;	// We ignore 8+ pointers entirely.
 	}
-	float scaledX = (int)(x * dp_xscale);	// why the (int) cast?
-	float scaledY = (int)(y * dp_yscale);
 	input_state.pointer_x[pointerId] = scaledX;
 	input_state.pointer_y[pointerId] = scaledY;
-	if (code == 1) {
-		input_state.pointer_down[pointerId] = true;
-		NativeTouch(pointerId, scaledX, scaledY, 0, TOUCH_DOWN);
-	} else if (code == 2) {
-		input_state.pointer_down[pointerId] = false;
-		NativeTouch(pointerId, scaledX, scaledY, 0, TOUCH_UP);
-	} else {
-		NativeTouch(pointerId, scaledX, scaledY, 0, TOUCH_MOVE);
-	}
 	input_state.mouse_valid = true;
+
+	// ELOG("Touch Exit %i", pointerId);
 }
 
-static void AsyncDown(int padbutton) {
+static inline void AsyncDown(int padbutton) {
 	pad_buttons_async_set |= padbutton;
 	pad_buttons_async_clear &= ~padbutton;
 }
 
-static void AsyncUp(int padbutton) {
+static inline void AsyncUp(int padbutton) {
 	pad_buttons_async_set &= ~padbutton;
 	pad_buttons_async_clear |= padbutton;
 }
 
-extern "C" void Java_com_henrikrydgard_libnative_NativeApp_keyDown(JNIEnv *, jclass, jint key) {
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_keyDown(JNIEnv *, jclass, jint deviceId, jint key) {
+	KeyInput keyInput;
+	keyInput.deviceId = deviceId;
+	keyInput.keyCode = key;
+	keyInput.flags = KEY_DOWN;
+	NativeKey(keyInput);
+
+	// Pad mapping
 	switch (key) {
-		case 1: AsyncDown(PAD_BUTTON_BACK); break; 	// Back
-		case 2:	AsyncDown(PAD_BUTTON_MENU); break;  // Menu
-		case 3:	AsyncDown(PAD_BUTTON_A); break; // Search
-		case KEYCODE_BUTTON_CROSS: AsyncDown(PAD_BUTTON_A); break;
-		case KEYCODE_BUTTON_CIRCLE: AsyncDown(PAD_BUTTON_B); break;
-		case KEYCODE_BUTTON_SQUARE: AsyncDown(PAD_BUTTON_X); break;
-		case KEYCODE_BUTTON_TRIANGLE: AsyncDown(PAD_BUTTON_Y); break;
-		case KEYCODE_DPAD_LEFT: AsyncDown(PAD_BUTTON_LEFT); break;
-		case KEYCODE_DPAD_UP: AsyncDown(PAD_BUTTON_UP); break;
-		case KEYCODE_DPAD_RIGHT: AsyncDown(PAD_BUTTON_RIGHT); break;
-		case KEYCODE_DPAD_DOWN: AsyncDown(PAD_BUTTON_DOWN); break;
-		case KEYCODE_BUTTON_L1: AsyncDown(PAD_BUTTON_LBUMPER); break;
-		case KEYCODE_BUTTON_R1: AsyncDown(PAD_BUTTON_RBUMPER); break;
-		case KEYCODE_BUTTON_START: AsyncDown(PAD_BUTTON_START); break;
-		case KEYCODE_BUTTON_SELECT: AsyncDown(PAD_BUTTON_SELECT); break;
-		default:
-			break;
+	case KEYCODE_BACK: AsyncDown(PAD_BUTTON_BACK); break; // Back
+	case KEYCODE_MENU: AsyncDown(PAD_BUTTON_MENU); break; // Menu
+	case KEYCODE_BUTTON_CROSS_PS3:
+		AsyncDown(PAD_BUTTON_A);
+		break;
+	case KEYCODE_BUTTON_CIRCLE_PS3:
+		AsyncDown(PAD_BUTTON_B);
+		break;
+	default: break;
 	}
 }
 
-extern "C" void Java_com_henrikrydgard_libnative_NativeApp_keyUp(JNIEnv *, jclass, jint key) {
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_keyUp(JNIEnv *, jclass, jint deviceId, jint key) {
+	KeyInput keyInput;
+	keyInput.deviceId = deviceId;
+	keyInput.keyCode = key;
+	keyInput.flags = KEY_UP;
+	NativeKey(keyInput);
+
+	// Pad mapping
 	switch (key) {
-		case 1: AsyncUp(PAD_BUTTON_BACK); break; 	// Back
-		case 2:	AsyncUp(PAD_BUTTON_MENU); break;  // Menu
-		case 3:	AsyncUp(PAD_BUTTON_A); break; // Search
-		case KEYCODE_BUTTON_CROSS: AsyncUp(PAD_BUTTON_A); break;
-		case KEYCODE_BUTTON_CIRCLE: AsyncUp(PAD_BUTTON_B); break;
-		case KEYCODE_BUTTON_SQUARE: AsyncUp(PAD_BUTTON_X); break;
-		case KEYCODE_BUTTON_TRIANGLE: AsyncUp(PAD_BUTTON_Y); break;
-		case KEYCODE_DPAD_LEFT: AsyncUp(PAD_BUTTON_LEFT); break;
-		case KEYCODE_DPAD_UP: AsyncUp(PAD_BUTTON_UP); break;
-		case KEYCODE_DPAD_RIGHT: AsyncUp(PAD_BUTTON_RIGHT); break;
-		case KEYCODE_DPAD_DOWN: AsyncUp(PAD_BUTTON_DOWN); break;
-		case KEYCODE_BUTTON_L1: AsyncUp(PAD_BUTTON_LBUMPER); break;
-		case KEYCODE_BUTTON_R1: AsyncUp(PAD_BUTTON_RBUMPER); break;
-		case KEYCODE_BUTTON_START: AsyncUp(PAD_BUTTON_START); break;
-		case KEYCODE_BUTTON_SELECT: AsyncUp(PAD_BUTTON_SELECT); break;
-		default:
-			break;
+	case KEYCODE_BACK:
+		AsyncUp(PAD_BUTTON_BACK);
+		break; // Back
+	case KEYCODE_MENU:
+		AsyncUp(PAD_BUTTON_MENU);
+		break; // Menu
+	case KEYCODE_BUTTON_CROSS_PS3:
+		AsyncUp(PAD_BUTTON_A);
+		break;
+	case KEYCODE_BUTTON_CIRCLE_PS3:
+		AsyncUp(PAD_BUTTON_B);
+		break;
+	default:
+		break;
 	}
 }
 
-extern "C" void JNICALL Java_com_henrikrydgard_libnative_NativeApp_accelerometer
-	(JNIEnv *, jclass, float x, float y, float z) {
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_beginJoystickEvent(
+	JNIEnv *env, jclass) {
+	// mutex lock?
+}
+
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_joystickEvent(
+		JNIEnv *env, jclass, jint deviceId, jint axisId, jfloat value) {
+	switch (axisId) {
+	case JOYSTICK_AXIS_X:
+		left_joystick_x_async = value;
+		break;
+	case JOYSTICK_AXIS_Y:
+		left_joystick_y_async = -value;
+		break;
+	case JOYSTICK_AXIS_Z:
+		right_joystick_x_async = value;
+		break;
+	case JOYSTICK_AXIS_RZ:
+		right_joystick_y_async = -value;
+		break;
+	case JOYSTICK_AXIS_HAT_X:
+		hat_joystick_x_async = value;
+		break;
+	case JOYSTICK_AXIS_HAT_Y:
+		hat_joystick_y_async = -value;
+		break;
+	}
+
+	// Hat is just stupid. Force translate it to dpad events.  TODO
+	
+	AxisInput axis;
+	axis.axisId = axisId;
+	axis.deviceId = deviceId;
+	axis.value = value;
+	NativeAxis(axis);
+}
+
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_endJoystickEvent(
+	JNIEnv *env, jclass) {
+	// mutex unlock?
+}
+
+
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_mouseWheelEvent(
+	JNIEnv *env, jclass, jint stick, jfloat x, jfloat y) {
+	// TODO
+}
+
+extern "C" void JNICALL Java_com_henrikrydgard_libnative_NativeApp_accelerometer(JNIEnv *, jclass, float x, float y, float z) {
 	// Theoretically this needs locking but I doubt it matters. Worst case, the X
 	// from one "sensor frame" will be used together with Y from the next.
 	// Should look into quantization though, for compressed movement storage.
@@ -390,13 +482,10 @@ extern "C" void JNICALL Java_com_henrikrydgard_libnative_NativeApp_accelerometer
 	input_state.acc.z = z;
 }
 
-extern "C" void Java_com_henrikrydgard_libnative_NativeApp_sendMessage
-	(JNIEnv *env, jclass, jstring message, jstring param) {
+extern "C" void Java_com_henrikrydgard_libnative_NativeApp_sendMessage(JNIEnv *env, jclass, jstring message, jstring param) {
 	jboolean isCopy;
 	std::string msg = GetJavaString(env, message);
 	std::string prm = GetJavaString(env, param);
 	ILOG("Message received: %s %s", msg.c_str(), prm.c_str());
 	NativeMessageReceived(msg.c_str(), prm.c_str());
 }
-
-

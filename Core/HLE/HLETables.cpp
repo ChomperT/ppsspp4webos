@@ -19,6 +19,7 @@
 
 #include "HLETables.h"
 
+#include "sceCcc.h"
 #include "sceCtrl.h"
 #include "sceDisplay.h"
 #include "sceHttp.h"
@@ -56,6 +57,15 @@
 #include "sceChnnlsv.h"
 #include "scePspNpDrm_user.h"
 #include "sceP3da.h"
+#include "sceGameUpdate.h"
+#include "sceDeflt.h"
+#include "sceMp4.h"
+#include "sceMp3.h"
+#include "scePauth.h"
+#include "sceNp.h"
+#include "sceMd5.h"
+#include "sceJpeg.h"
+#include "sceAudiocodec.h"
 
 #define N(s) s
 
@@ -66,11 +76,12 @@
 //kjfs
 //sound
 //zlibdec
-const HLEFunction FakeSysCalls[] =
-{
+const HLEFunction FakeSysCalls[] = {
 	{NID_THREADRETURN, __KernelReturnFromThread, "__KernelReturnFromThread"},
 	{NID_CALLBACKRETURN, __KernelReturnFromMipsCall, "__KernelReturnFromMipsCall"},
 	{NID_INTERRUPTRETURN, __KernelReturnFromInterrupt, "__KernelReturnFromInterrupt"},
+	{NID_EXTENDRETURN, __KernelReturnFromExtendStack, "__KernelReturnFromExtendStack"},
+	{NID_MODULERETURN, __KernelReturnFromModuleFunc, "__KernelReturnFromModuleFunc"},
 	{NID_IDLE, __KernelIdle, "_sceKernelIdle"},
 };
 
@@ -78,7 +89,7 @@ const HLEFunction UtilsForUser[] =
 {
 	{0x91E4F6A7, WrapU_V<sceKernelLibcClock>, "sceKernelLibcClock"},
 	{0x27CC57F0, WrapU_U<sceKernelLibcTime>, "sceKernelLibcTime"},
-	{0x71EC4271, WrapU_U<sceKernelLibcGettimeofday>, "sceKernelLibcGettimeofday"},
+	{0x71EC4271, WrapU_UU<sceKernelLibcGettimeofday>, "sceKernelLibcGettimeofday"},
 	{0xBFA98062, WrapI_UI<sceKernelDcacheInvalidateRange>, "sceKernelDcacheInvalidateRange"},
 	{0xC8186A58, 0, "sceKernelUtilsMd5Digest"},
 	{0x9E5C5086, 0, "sceKernelUtilsMd5BlockInit"},
@@ -88,8 +99,8 @@ const HLEFunction UtilsForUser[] =
 	{0xF8FCD5BA, 0, "sceKernelUtilsSha1BlockInit"},
 	{0x346F6DA8, 0, "sceKernelUtilsSha1BlockUpdate"},
 	{0x585F1C09, 0, "sceKernelUtilsSha1BlockResult"},
-	{0xE860E75E, 0, "sceKernelUtilsMt19937Init"},
-	{0x06FB8A63, 0, "sceKernelUtilsMt19937UInt"},
+	{0xE860E75E, WrapU_UU<sceKernelUtilsMt19937Init>, "sceKernelUtilsMt19937Init"},
+	{0x06FB8A63, WrapU_U<sceKernelUtilsMt19937UInt>, "sceKernelUtilsMt19937UInt"},
 	{0x37FB5C42, WrapU_V<sceKernelGetGPI>, "sceKernelGetGPI"},
 	{0x6AD345D7, WrapV_U<sceKernelSetGPO>, "sceKernelSetGPO"},
 	{0x79D1C3FA, WrapI_V<sceKernelDcacheWritebackAll>, "sceKernelDcacheWritebackAll"},
@@ -127,7 +138,7 @@ const HLEFunction LoadCoreForKernel[] =
 	{0xBF983EF2, 0, "sceKernelProbeExecutableObject"},
 	{0x7068E6BA, 0, "sceKernelLoadExecutableObject"},
 	{0xB4D6FECC, 0, "sceKernelApplyElfRelSection"},
-	{0x54AB2675, 0, "LoadCoreForKernel_54AB2675"},
+	{0x54AB2675, 0, "sceKernelApplyPspRelSection"},
 	{0x2952F5AC, 0, "sceKernelDcacheWBinvAll"},
 	{0xD8779AC6, WrapU_V<sceKernelIcacheClearAll>, "sceKernelIcacheClearAll"},
 	{0x99A695F0, 0, "sceKernelRegisterLibrary"},
@@ -151,7 +162,7 @@ const HLEFunction LoadCoreForKernel[] =
 	{0xCCE4A157, 0, "sceKernelFindModuleByUID"},
 	{0x82CE54ED, 0, "sceKernelModuleCount"},
 	{0xC0584F0C, 0, "sceKernelGetModuleList"},
-        {0xCF8A41B1, WrapU_V<sceKernelFindModuleByName>,"sceKernelFindModuleByName"},
+	{0xCF8A41B1, WrapU_C<sceKernelFindModuleByName>,"sceKernelFindModuleByName"},
 };
 
 
@@ -169,9 +180,9 @@ const HLEFunction KDebugForKernel[] =
 	{0xE6554FDA, 0, "sceKernelRegisterDebugRead"},
 	{0xB9C643C9, 0, "sceKernelDebugEcho"},
 	{0x7D1C74F0, 0, "sceKernelDebugEchoSet"},
-	{0x24C32559, 0, "KDebugForKernel_24C32559"},
+	{0x24C32559, 0, "sceKernelDipsw"},
 	{0xD636B827, 0, "sceKernelRemoveByDebugSection"},
-	{0x5282DD5E, 0, "KDebugForKernel_5282DD5E"},
+	{0x5282DD5E, 0, "sceKernelDipswSet"},
 	{0x9F8703E4, 0, "KDebugForKernel_9F8703E4"},
 	{0x333DCEC7, 0, "KDebugForKernel_333DCEC7"},
 	{0xE892D9A1, 0, "KDebugForKernel_E892D9A1"},
@@ -220,6 +231,7 @@ void RegisterAllModules() {
 	Register_StdioForUser();
 
 	Register_sceHprm();
+	Register_sceCcc();
 	Register_sceCtrl();
 	Register_sceDisplay();
 	Register_sceAudio();
@@ -250,6 +262,17 @@ void RegisterAllModules() {
 	Register_sceChnnlsv();
 	Register_sceNpDrm();
 	Register_sceP3da();
+	Register_sceGameUpdate();
+	Register_sceDeflt();
+	Register_sceMp4();
+	Register_scePauth();
+	Register_sceNp();
+	Register_sceNpCommerce2();
+	Register_sceNpService();
+	Register_sceNpAuth();
+	Register_sceMd5();
+	Register_sceJpeg();
+	Register_sceAudiocodec();
 
 	for (int i = 0; i < numModules; i++)
 	{

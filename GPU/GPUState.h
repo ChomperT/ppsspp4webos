@@ -20,7 +20,6 @@
 #include "../Globals.h"
 #include "../native/gfx/gl_common.h"
 #include "ge_constants.h"
-#include <cstring>
 
 struct GPUgstate
 {
@@ -101,7 +100,7 @@ struct GPUgstate
 				offsetx,
 				offsety,
 				pad111[2],
-				lmode,
+				shademodel,
 				reversenormals,
 				pad222,
 				materialupdate,
@@ -114,7 +113,7 @@ struct GPUgstate
 				materialspecularcoef,
 				ambientcolor,
 				ambientalpha,
-				colormodel,
+				lmode,
 				ltype[4],
 				lpos[12],
 				ldir[12],
@@ -211,6 +210,10 @@ struct GPUgstate
 	bool isStencilTestEnabled() const { return stencilTestEnable & 1; }
 	bool isAlphaBlendEnabled() const { return alphaBlendEnable & 1; }
 	bool isDitherEnabled() const { return ditherEnable & 1; }
+	bool isAlphaTestEnabled() const { return alphaTestEnable & 1; }
+	bool isColorTestEnabled() const { return colorTestEnable & 1; }
+	bool isLightingEnabled() const { return lightingEnable & 1; }
+	bool isTextureMapEnabled() const { return textureMapEnable & 1; }
 
 	// UV gen
 	int getUVGenMode() const { return texmapmode & 3;}   // 2 bits
@@ -248,6 +251,8 @@ struct GPUStateCache
 	u32 offsetAddr;
 
 	bool textureChanged;
+	bool textureFullAlpha;
+	bool framebufChanged;
 
 	int skipDrawReason;
 
@@ -260,6 +265,8 @@ struct GPUStateCache
 	float lightdir[4][3];
 	float lightatt[4][3];
 	float lightColor[3][4][3];  // Ambient Diffuse Specular
+	float lightangle[4]; // spotlight cone angle (cosine)
+	float lightspotCoef[4]; // spotlight dropoff
 	float morphWeights[8];
 
 	u32 curTextureWidth;
@@ -282,7 +289,6 @@ struct GPUStatistics
 		memset(this, 0, sizeof(*this));
 	}
 	void resetFrame() {
-		numJoins = 0;
 		numDrawCalls = 0;
 		numCachedDrawCalls = 0;
 		numVertsSubmitted = 0;
@@ -295,10 +301,11 @@ struct GPUStatistics
 		numFlushes = 0;
 		numTexturesDecoded = 0;
 		msProcessingDisplayLists = 0;
+		vertexGPUCycles = 0;
+		otherGPUCycles = 0;
 	}
 
 	// Per frame statistics
-	int numJoins;
 	int numDrawCalls;
 	int numCachedDrawCalls;
 	int numFlushes;
@@ -311,6 +318,8 @@ struct GPUStatistics
 	int numShaderSwitches;
 	int numTexturesDecoded;
 	double msProcessingDisplayLists;
+	int vertexGPUCycles;
+	int otherGPUCycles;
 
 	// Total statistics, updated by the GPU core in UpdateStats
 	int numFrames;
@@ -350,6 +359,6 @@ extern GPUInterface *gpu;
 extern GPUStatistics gpuStats;
 
 inline u32 GPUStateCache::getRelativeAddress(u32 data) const {
-	u32 baseExtended = ((gstate.base & 0x0F0000) << 8) | (data & 0xFFFFFF);
+	u32 baseExtended = ((gstate.base & 0x0F0000) << 8) | data;
 	return (gstate_c.offsetAddr + baseExtended) & 0x0FFFFFFF;
 }

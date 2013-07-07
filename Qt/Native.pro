@@ -17,20 +17,30 @@ x86:!mobile_platform: {
 	HEADERS += ../native/base/backtrace.h
 }
 
-# EtcPack
+# RG_ETC1
 
-SOURCES += ../native/ext/etcpack/etcdec.cpp \
-	../native/ext/etcpack/etcpack.cpp \
-	../native/ext/etcpack/image.cpp
-HEADERS += ../native/ext/etcpack/etcdec.h \
-	../native/ext/etcpack/etcpack.h \
-	../native/ext/etcpack/image.h
-INCLUDEPATH += ../native/ext/etcpack
+SOURCES += ../native/ext/rg_etc1/rg_etc1.cpp
+HEADERS += ../native/ext/rg_etc1/rg_etc1.h
+INCLUDEPATH += ../native/ext/rg_etc1
 
 # Cityhash
+
 SOURCES += ../native/ext/cityhash/city.cpp
 HEADERS += ../native/ext/cityhash/*.h
 INCLUDEPATH += ../native/ext/cityhash
+
+# JPGE
+SOURCES += ../native/ext/jpge/*.cpp
+HEADERS += ../native/ext/jpge/*.h
+INCLUDEPATH += ../native/ext/jpge
+
+# VJSON
+
+SOURCES += ../native/ext/vjson/json.cpp \
+	../native/ext/vjson/block_allocator.cpp
+HEADERS += ../native/ext/vjson/json.h \
+	../native/ext/vjson/block_allocator.h
+INCLUDEPATH += ../native/ext/vjson
 
 # Stb_image
 
@@ -66,8 +76,8 @@ SOURCES +=  ../native/audio/*.cpp \
 	../native/base/error_context.cpp \
 	../native/base/fastlist_test.cpp \
 	../native/base/stringutil.cpp \
-	../native/base/threadutil.cpp \
 	../native/base/timeutil.cpp \
+	../native/data/compression.cpp \
 	../native/file/*.cpp \
 	../native/gfx/gl_debug_log.cpp \
 	../native/gfx/gl_lost_manager.cpp \
@@ -75,18 +85,20 @@ SOURCES +=  ../native/audio/*.cpp \
 	../native/gfx/texture_atlas.cpp \
 	../native/gfx/texture_gen.cpp \
 	../native/gfx_es2/*.cpp \
+	../native/i18n/*.cpp \
 	../native/image/*.cpp \
 	../native/input/gesture_detector.cpp \
+	../native/input/input_state.cpp \
 	../native/json/json_writer.cpp \
 	../native/math/curves.cpp \
+	../native/math/expression_parser.cpp \
 	../native/math/math_util.cpp \
 	../native/math/lin/*.cpp \
 	../native/midi/midi_input.cpp \
 	../native/net/*.cpp \
 	../native/profiler/profiler.cpp \
-	../native/ui/screen.cpp \
-	../native/ui/ui.cpp \
-	../native/ui/virtual_input.cpp \
+	../native/thread/*.cpp \
+	../native/ui/*.cpp \
 	../native/util/bits/*.cpp \
 	../native/util/hash/hash.cpp \
 	../native/util/random/perlin.cpp \
@@ -106,8 +118,8 @@ HEADERS +=  ../native/audio/*.h \
 	../native/base/scoped_ptr.h \
 	../native/base/stats.h \
 	../native/base/stringutil.h \
-	../native/base/threadutil.h \
 	../native/base/timeutil.h \
+	../native/data/compression.h \
 	../native/file/*.h \
 	../native/gfx/gl_debug_log.h \
 	../native/gfx/gl_lost_manager.h \
@@ -115,16 +127,18 @@ HEADERS +=  ../native/audio/*.h \
 	../native/gfx/texture_atlas.h \
 	../native/gfx/texture_gen.h \
 	../native/gfx_es2/*.h \
+	../native/i18n/*.h \
 	../native/image/*.h \
 	../native/input/gesture_detector.h \
 	../native/input/input_state.h \
 	../native/json/json_writer.h \
-	../native/math/compression.h \
 	../native/math/curves.h \
+	../native/math/expression_parser.h \
 	../native/math/lin/*.h \
 	../native/midi/midi_input.h \
 	../native/net/*.h \
 	../native/profiler/profiler.h \
+	../native/thread/*.h \
 	../native/ui/ui.h \
 	../native/ui/screen.h \
 	../native/ui/virtual_input.h \

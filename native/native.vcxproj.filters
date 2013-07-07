@@ -53,9 +53,6 @@
     <ClInclude Include="gfx_es2\glsl_program.h">
       <Filter>gfx</Filter>
     </ClInclude>
-    <ClInclude Include="ext\etcpack\etcdec.h">
-      <Filter>ext</Filter>
-    </ClInclude>
     <ClInclude Include="audio\wav_read.h">
       <Filter>audio</Filter>
     </ClInclude>
@@ -98,9 +95,6 @@
     <ClInclude Include="math\math_util.h">
       <Filter>math</Filter>
     </ClInclude>
-    <ClInclude Include="ext\etcpack\etcpack.h">
-      <Filter>ext</Filter>
-    </ClInclude>
     <ClInclude Include="base\timeutil.h">
       <Filter>base</Filter>
     </ClInclude>
@@ -136,9 +130,6 @@
     </ClInclude>
     <ClInclude Include="file\file_util.h">
       <Filter>file</Filter>
-    </ClInclude>
-    <ClInclude Include="math\compression.h">
-      <Filter>math</Filter>
     </ClInclude>
     <ClInclude Include="gfx_es2\vertex_format.h">
       <Filter>gfx</Filter>
@@ -212,9 +203,6 @@
     <ClInclude Include="util\random\rng.h">
       <Filter>util</Filter>
     </ClInclude>
-    <ClInclude Include="base\threadutil.h">
-      <Filter>base</Filter>
-    </ClInclude>
     <ClInclude Include="ext\stb_image\stb_image.h">
       <Filter>ext</Filter>
     </ClInclude>
@@ -242,6 +230,55 @@
     <ClInclude Include="ext\cityhash\citycrc.h">
       <Filter>ext</Filter>
     </ClInclude>
+    <ClInclude Include="ext\rg_etc1\rg_etc1.h">
+      <Filter>ext</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\prioritizedworkqueue.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\thread.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\threadutil.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="i18n\i18n.h">
+      <Filter>i18n</Filter>
+    </ClInclude>
+    <ClInclude Include="file\ini_file.h">
+      <Filter>file</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\threadpool.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\view.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\viewgroup.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="math\geom2d.h">
+      <Filter>math</Filter>
+    </ClInclude>
+    <ClInclude Include="net\url.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="base\functional.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\ui_screen.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="data\compression.h">
+      <Filter>data</Filter>
+    </ClInclude>
+    <ClInclude Include="android\app-android.h" />
+    <ClInclude Include="ext\jpge\jpge.h" />
+    <ClInclude Include="math\expression_parser.h">
+      <Filter>math</Filter>
+    </ClInclude>
+    <ClInclude Include="ext\jpge\jpgd.h" />
+    <ClInclude Include="input\keycodes.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="gfx\gl_debug_log.cpp">
@@ -274,9 +311,6 @@
     <ClCompile Include="gfx_es2\glsl_program.cpp">
       <Filter>gfx</Filter>
     </ClCompile>
-    <ClCompile Include="ext\etcpack\etcdec.cpp">
-      <Filter>ext</Filter>
-    </ClCompile>
     <ClCompile Include="audio\wav_read.cpp">
       <Filter>audio</Filter>
     </ClCompile>
@@ -300,9 +334,6 @@
     </ClCompile>
     <ClCompile Include="gfx\texture_atlas.cpp">
       <Filter>gfx</Filter>
-    </ClCompile>
-    <ClCompile Include="ext\etcpack\etcpack.cpp">
-      <Filter>ext</Filter>
     </ClCompile>
     <ClCompile Include="base\timeutil.cpp">
       <Filter>base</Filter>
@@ -397,9 +428,6 @@
     <ClCompile Include="util\random\perlin.cpp">
       <Filter>util</Filter>
     </ClCompile>
-    <ClCompile Include="base\threadutil.cpp">
-      <Filter>base</Filter>
-    </ClCompile>
     <ClCompile Include="ext\stb_image\stb_image.c">
       <Filter>ext</Filter>
     </ClCompile>
@@ -429,6 +457,47 @@
     <ClCompile Include="ext\cityhash\city.cpp">
       <Filter>ext</Filter>
     </ClCompile>
+    <ClCompile Include="ext\rg_etc1\rg_etc1.cpp">
+      <Filter>ext</Filter>
+    </ClCompile>
+    <ClCompile Include="thread\prioritizedworkqueue.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="thread\threadutil.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="i18n\i18n.cpp">
+      <Filter>i18n</Filter>
+    </ClCompile>
+    <ClCompile Include="file\ini_file.cpp">
+      <Filter>file</Filter>
+    </ClCompile>
+    <ClCompile Include="thread\threadpool.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\view.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\viewgroup.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="net\url.cpp">
+      <Filter>net</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\ui_screen.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="data\compression.cpp">
+      <Filter>data</Filter>
+    </ClCompile>
+    <ClCompile Include="ext\jpge\jpge.cpp" />
+    <ClCompile Include="math\expression_parser.cpp">
+      <Filter>math</Filter>
+    </ClCompile>
+    <ClCompile Include="input\input_state.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
+    <ClCompile Include="ext\jpge\jpgd.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="gfx">
@@ -487,6 +556,12 @@
     </Filter>
     <Filter Include="tools">
       <UniqueIdentifier>{4515306f-4664-46bf-a89b-abfec5520a15}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="thread">
+      <UniqueIdentifier>{caa41117-1d90-47cc-9fba-f7e670e315a3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="i18n">
+      <UniqueIdentifier>{02e8ef95-82c7-4420-b029-a189a5e0fcbd}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

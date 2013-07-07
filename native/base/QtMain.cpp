@@ -2,8 +2,8 @@
  * Copyright (c) 2012 Sacha Refshauge
  *
  */
-// Qt implementation of the framework.
-// Currently supports: Symbian, Blackberry, Linux
+// Qt 4.7 implementation of the framework.
+// Currently supports: Symbian, Blackberry, Meego, Linux, Windows
 
 #include <QtGui/QApplication>
 #include <QUrl>
@@ -12,9 +12,12 @@
 #include <QDesktopServices>
 
 #ifdef __SYMBIAN32__
-#include <AknAppUi.h>
+#include <e32std.h>
+#include <QSystemScreenSaver>
 #endif
 #include "QtMain.h"
+
+InputState* input_state;
 
 void LaunchBrowser(const char *url)
 {
@@ -39,26 +42,20 @@ void SimulateGamepad(InputState *input) {
 
 float CalculateDPIScale()
 {
-	// Sane default for Symbian, Blackberry and Meego
+	// Sane default rather than check DPI
 #ifdef __SYMBIAN32__
-	return 1.3f;
+	return 1.4f;
 #else
 	return 1.2f;
 #endif
 }
 
-int main(int argc, char *argv[])
+Q_DECL_EXPORT int main(int argc, char *argv[])
 {
 #ifdef Q_WS_X11
 	QApplication::setAttribute(Qt::AA_X11InitThreads, true);
 #endif
 	QApplication a(argc, argv);
-#ifdef __SYMBIAN32__
-	// Lock orientation to landscape on Symbian
-	QT_TRAP_THROWING(dynamic_cast<CAknAppUi*>(CEikonEnv::Static()->AppUi())->SetOrientationL(CAknAppUi::EAppUiOrientationLandscape));
-	// Set RunFast hardware mode for VFPv2. Denormalised values are treated as 0. NaN used for all NaN situations.
-	User::SetFloatingPointMode(EFpModeRunFast);
-#endif
 	QSize res = QApplication::desktop()->screenGeometry().size();
 	if (res.width() < res.height())
 		res.transpose();
@@ -72,15 +69,27 @@ int main(int argc, char *argv[])
 	char* savegame_dir = "E:/PPSSPP/";
 #elif defined(BLACKBERRY)
 	char* savegame_dir = "data/";
+#elif defined(MEEGO_EDITION_HARMATTAN)
+	char* savegame_dir = "/home/user/MyDocs/PPSSPP/";
+	QDir myDocs("/home/user/MyDocs/");
+	if (!myDocs.exists("PPSSPP"))
+		myDocs.mkdir("PPSSPP");
 #else
 	char* savegame_dir = "./";
 #endif
 	NativeInit(argc, (const char **)argv, savegame_dir, QDir::tempPath().toStdString().c_str(), "BADCOFFEE");
 
-#if defined(USING_GLES2)
+#if !defined(Q_WS_X11) || defined(ARM)
 	MainUI w(dpi_scale);
 	w.resize(pixel_xres, pixel_yres);
 	w.showFullScreen();
+#endif
+#ifdef __SYMBIAN32__
+	// Set RunFast hardware mode for VFPv2.
+	User::SetFloatingPointMode(EFpModeRunFast);
+	// Disable screensaver
+	QSystemScreenSaver *ssObject = new QSystemScreenSaver(&w);
+	ssObject->setScreenSaverInhibit();
 #endif
 
 	MainAudio *audio = new MainAudio();

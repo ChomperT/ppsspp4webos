@@ -69,6 +69,12 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <AdditionalIncludeDirectories>../native</AdditionalIncludeDirectories>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <MinimalRebuild>false</MinimalRebuild>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -86,6 +92,13 @@
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>../native</AdditionalIncludeDirectories>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <OmitFramePointers>false</OmitFramePointers>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <MinimalRebuild>false</MinimalRebuild>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -107,6 +120,10 @@
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
+      <AdditionalIncludeDirectories>../native</AdditionalIncludeDirectories>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -127,6 +144,14 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ForcedIncludeFiles>stdafx.h</ForcedIncludeFiles>
+      <AdditionalIncludeDirectories>../native</AdditionalIncludeDirectories>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <OmitFramePointers>false</OmitFramePointers>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <RuntimeTypeInfo>false</RuntimeTypeInfo>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -141,7 +166,7 @@
   <ItemGroup>
     <ClInclude Include="ABI.h" />
     <ClInclude Include="ArmEmitter.h" />
-    <ClInclude Include="Atomic.h" />
+    <ClInclude Include="Atomics.h" />
     <ClInclude Include="Atomic_GCC.h" />
     <ClInclude Include="Atomic_Win32.h" />
     <ClInclude Include="ChunkFile.h" />
@@ -152,6 +177,7 @@
     <ClInclude Include="CommonTypes.h" />
     <ClInclude Include="ConsoleListener.h" />
     <ClInclude Include="CPUDetect.h" />
+    <ClInclude Include="Crypto\md5.h" />
     <ClInclude Include="DebugInterface.h" />
     <ClInclude Include="ExtendedTrace.h" />
     <ClInclude Include="FifoQueue.h" />
@@ -160,7 +186,7 @@
     <ClInclude Include="FixedSizeQueue.h" />
     <ClInclude Include="FixedSizeUnorderedSet.h" />
     <ClInclude Include="Hash.h" />
-    <ClInclude Include="IniFile.h" />
+    <ClInclude Include="KeyMap.h" />
     <ClInclude Include="LinearDiskCache.h" />
     <ClInclude Include="Log.h" />
     <ClInclude Include="LogManager.h" />
@@ -174,9 +200,10 @@
     <ClInclude Include="StdConditionVariable.h" />
     <ClInclude Include="StdMutex.h" />
     <ClInclude Include="StdThread.h" />
-    <ClInclude Include="StringUtil.h" />
+    <ClInclude Include="StringUtils.h" />
     <ClInclude Include="targetver.h" />
     <ClInclude Include="Thread.h" />
+    <ClInclude Include="ThreadPools.h" />
     <ClInclude Include="Thunk.h" />
     <ClInclude Include="Timer.h" />
     <ClInclude Include="x64Analyzer.h" />
@@ -194,11 +221,12 @@
     <ClCompile Include="ColorUtil.cpp" />
     <ClCompile Include="ConsoleListener.cpp" />
     <ClCompile Include="CPUDetect.cpp" />
+    <ClCompile Include="Crypto\md5.cpp" />
     <ClCompile Include="ExtendedTrace.cpp" />
     <ClCompile Include="FileSearch.cpp" />
     <ClCompile Include="FileUtil.cpp" />
     <ClCompile Include="Hash.cpp" />
-    <ClCompile Include="IniFile.cpp" />
+    <ClCompile Include="KeyMap.cpp" />
     <ClCompile Include="LogManager.cpp" />
     <ClCompile Include="MathUtil.cpp" />
     <ClCompile Include="MemArena.cpp" />
@@ -211,8 +239,9 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="StringUtil.cpp" />
+    <ClCompile Include="StringUtils.cpp" />
     <ClCompile Include="Thread.cpp" />
+    <ClCompile Include="ThreadPools.cpp" />
     <ClCompile Include="Thunk.cpp" />
     <ClCompile Include="Timer.cpp" />
     <ClCompile Include="Version.cpp" />
@@ -221,6 +250,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\native\native.vcxproj">
+      <Project>{c4df647e-80ea-4111-a0a8-218b1b711e18}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

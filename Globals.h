@@ -15,11 +15,10 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-const char *PPSSPP_GIT_VERSION = "unknown";
-
 #pragma once
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include <string>
 #include <utility>

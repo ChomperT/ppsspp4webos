@@ -28,11 +28,10 @@
 #ifdef __APPLE__
 #include <strings.h>
 #endif
-#include <string>
 
 #include "FileSearch.h"
 
-#include "StringUtil.h"
+#include "StringUtils.h"
 
 
 CFileSearch::CFileSearch(const CFileSearch::XStringVector& _rSearchStrings, const CFileSearch::XStringVector& _rDirectories)

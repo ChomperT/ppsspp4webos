@@ -8,7 +8,7 @@
 
 #include <QAudioOutput>
 #include <QAudioFormat>
-#ifdef __SYMBIAN32__
+#ifdef USING_GLES2
 #include <QAccelerometer>
 QTM_USE_NAMESPACE
 #endif
@@ -28,8 +28,8 @@ const int buttonMappings[18] = {
 	Qt::Key_S + 0x20,   //B
 	Qt::Key_Z + 0x20,   //X
 	Qt::Key_A + 0x20,   //Y
-	Qt::Key_W + 0x20,   //LBUMPER
-	Qt::Key_Q + 0x20,   //RBUMPER
+	Qt::Key_Q + 0x20,   //LBUMPER
+	Qt::Key_W + 0x20,   //RBUMPER
 	Qt::Key_1,          //START
 	Qt::Key_2,          //SELECT
 	Qt::Key_Up,         //UP
@@ -54,13 +54,15 @@ public:
 		QGLWidget(parent), dpi_scale(scale)
 	{
 		setAttribute(Qt::WA_AcceptTouchEvents);
-#ifdef __SYMBIAN32__
+		setAttribute(Qt::WA_LockLandscapeOrientation);
+		pad_buttons = 0;
+#ifdef USING_GLES2
 		acc = new QAccelerometer(this);
 		acc->start();
 #endif
 	}
 	~MainUI() {
-#ifdef __SYMBIAN32__
+#ifdef USING_GLES2
 		delete acc;
 #endif
 		NativeShutdownGraphics();
@@ -108,15 +110,15 @@ protected:
 			input_state.pointer_y[0] = ((QMouseEvent*)e)->pos().y() * dpi_scale;
 		break;
 		case QEvent::KeyPress:
-			for (int b = 0; b < 14; b++) {
+			for (int b = 0; b < 18; b++) {
 				if (((QKeyEvent*)e)->key() == buttonMappings[b])
-					input_state.pad_buttons |= (1<<b);
+					pad_buttons |= (1<<b);
 			}
 		break;
 		case QEvent::KeyRelease:
-			for (int b = 0; b < 14; b++) {
+			for (int b = 0; b < 18; b++) {
 				if (((QKeyEvent*)e)->key() == buttonMappings[b])
-					input_state.pad_buttons &= ~(1<<b);
+					pad_buttons &= ~(1<<b);
 			}
 		break;
 		default:
@@ -136,6 +138,7 @@ protected:
 
 	void paintGL()
 	{
+		input_state.pad_buttons = pad_buttons;
 		SimulateGamepad(&input_state);
 		updateAccelerometer();
 		UpdateInputState(&input_state);
@@ -148,7 +151,7 @@ protected:
 
 	void updateAccelerometer()
 	{
-#ifdef __SYMBIAN32__
+#ifdef USING_GLES2
 		// TODO: Toggle it depending on whether it is enabled
 		QAccelerometerReading *reading = acc->reading();
 		if (reading) {
@@ -160,8 +163,9 @@ protected:
 	}
 
 private:
+	int pad_buttons;
 	InputState input_state;
-#ifdef __SYMBIAN32__
+#ifdef USING_GLES2
 	QAccelerometer* acc;
 #endif
 	float dpi_scale;

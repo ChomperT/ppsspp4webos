@@ -1,128 +1,164 @@
 // NOTE: Apologies for the quality of this code, this is really from pre-opensource Dolphin - that is, 2003.
 
-#include "base/threadutil.h"
+#include "base/display.h"
+#include "base/timeutil.h"
+#include "base/NativeApp.h"
 #include "Log.h"
-#include "StringUtil.h"
+#include "StringUtils.h"
 #include "../Globals.h"
 #include "EmuThread.h"
+#include "WndMainWindow.h"
+#include "resource.h"
+#include "../Core/Reporting.h"
 #include "../Core/MemMap.h"
 #include "../Core/Core.h"
 #include "../Core/Host.h"
 #include "../Core/System.h"
 #include "../Core/Config.h"
+#include "thread/threadutil.h"
 
 #include <tchar.h>
 #include <process.h>
+#include <intrin.h>
+#pragma intrinsic(_InterlockedExchange)
 
-char fileToStart[MAX_PATH];
+class EmuThreadLockGuard
+{
+public:
+	EmuThreadLockGuard() { emuThreadCS_.Enter(); }
+	~EmuThreadLockGuard() { emuThreadCS_.Leave(); }
+private:
+	static struct EmuThreadCS
+	{
+		EmuThreadCS() { InitializeCriticalSection(&TheCS_); }
+		~EmuThreadCS() { DeleteCriticalSection(&TheCS_); }
+		void Enter() { EnterCriticalSection(&TheCS_); }
+		void Leave() { LeaveCriticalSection(&TheCS_); }
+		CRITICAL_SECTION TheCS_;
+	} emuThreadCS_;
+};
 
+EmuThreadLockGuard::EmuThreadCS EmuThreadLockGuard::emuThreadCS_;
 static HANDLE emuThread;
+static long emuThreadReady;
 
+enum EmuTreadStatus : long
+{
+	THREAD_NONE = 0,
+	THREAD_INIT,
+	THREAD_CORE_LOOP,
+	THREAD_SHUTDOWN,
+	THREAD_END,
+};
 
 HANDLE EmuThread_GetThreadHandle()
 {
+	EmuThreadLockGuard lock;
 	return emuThread;
 }
 
+unsigned int WINAPI TheThread(void *);
 
-DWORD TheThread(LPVOID x);
-
-void EmuThread_Start(const char *filename)
+void EmuThread_Start()
 {
-	// _dbg_clear_();
-	_tcsncpy(fileToStart, filename, sizeof(fileToStart) - 1);
-	fileToStart[sizeof(fileToStart) - 1] = 0;
-
-	unsigned int i;
-	emuThread = (HANDLE)_beginthreadex(0,0,(unsigned int (__stdcall *)(void *))TheThread,(LPVOID)0,0,&i);
+	EmuThreadLockGuard lock;
+	emuThread = (HANDLE)_beginthreadex(0, 0, &TheThread, 0, 0, 0);
 }
 
 void EmuThread_Stop()
 {
+	globalUIState = UISTATE_EXIT;
 //	DSound_UpdateSound();
 	Core_Stop();
-	if (WAIT_TIMEOUT == WaitForSingleObject(EmuThread_GetThreadHandle(),300))
+	Core_WaitInactive(800);
+	if (WAIT_TIMEOUT == WaitForSingleObject(emuThread, 800))
 	{
-		//MessageBox(0,"Wait for emuthread timed out, please alert the developer to possible deadlock or infinite loop in emuthread :(.",0,0);
+		_dbg_assert_msg_(COMMON, false, "Wait for EmuThread timed out.");
+	}
+	{
+		EmuThreadLockGuard lock;
+		CloseHandle(emuThread);
+		emuThread = 0;
 	}
 	host->UpdateUI();
 }
 
-
-char *GetCurrentFilename()
+bool EmuThread_Ready()
 {
-	return fileToStart;
+	return emuThreadReady == THREAD_CORE_LOOP;
 }
 
-DWORD TheThread(LPVOID x) {
+unsigned int WINAPI TheThread(void *)
+{
+	_InterlockedExchange(&emuThreadReady, THREAD_INIT);
+
 	setCurrentThreadName("EmuThread");
 
-	g_State.bEmuThreadStarted = true;
+	std::string memstick, flash0;
+	GetSysDirectories(memstick, flash0);
 
-	CoreParameter coreParameter;
+	// Native overwrites host. Can't allow that.
+
+	Host *oldHost = host;
+	UpdateScreenScale();
+
+	NativeInit(__argc, (const char **)__argv, memstick.c_str(), memstick.c_str(), "1234");
+	Host *nativeHost = host;
+	host = oldHost;
 
 	host->UpdateUI();
 	
 	std::string error_string;
 	if (!host->InitGL(&error_string)) {
+		Reporting::ReportMessage("OpenGL init error: %s", error_string.c_str());
 		std::string full_error = StringFromFormat( "Failed initializing OpenGL. Try upgrading your graphics drivers.\n\nError message:\n\n%s", error_string.c_str());
 		MessageBoxA(0, full_error.c_str(), "OpenGL Error", MB_OK | MB_ICONERROR);
 		ERROR_LOG(BOOT, full_error.c_str());
 		goto shutdown;
 	}
 
-	INFO_LOG(BOOT, "Starting up hardware.");
-
-	coreParameter.fileToStart = fileToStart;
-	coreParameter.enableSound = true;
-	coreParameter.gpuCore = GPU_GLES;
-	coreParameter.cpuCore = g_Config.bJit ? CPU_JIT : CPU_INTERPRETER;
-	coreParameter.enableDebugging = true;
-	coreParameter.printfEmuLog = false;
-	coreParameter.headLess = false;
-	coreParameter.renderWidth = (480 * g_Config.iWindowZoom) * (g_Config.SSAntiAliasing + 1);
-	coreParameter.renderHeight = (272 * g_Config.iWindowZoom) * (g_Config.SSAntiAliasing + 1);
-	coreParameter.outputWidth = 480 * g_Config.iWindowZoom;
-	coreParameter.outputHeight = 272 * g_Config.iWindowZoom;
-	coreParameter.pixelWidth = 480 * g_Config.iWindowZoom;
-	coreParameter.pixelHeight = 272 * g_Config.iWindowZoom;
-	coreParameter.startPaused = !g_Config.bAutoRun;
-	coreParameter.useMediaEngine = false;
-
-	error_string = "";
-	if (!PSP_Init(coreParameter, &error_string))
-	{
-		ERROR_LOG(BOOT, "Error loading: %s", error_string.c_str());
-		goto shutdown;
-	}
+	NativeInitGraphics();
 
 	INFO_LOG(BOOT, "Done.");
 	_dbg_update_();
 
-	host->UpdateDisassembly();
-	Core_EnableStepping(coreParameter.startPaused ? TRUE : FALSE);
+	if (coreState == CORE_POWERDOWN) {
+		INFO_LOG(BOOT, "Exit before core loop.");
+		goto shutdown;
+	}
 
-	g_State.bBooted = true;
-#ifdef _DEBUG
-	host->UpdateMemView();
-#endif
+	_InterlockedExchange(&emuThreadReady, THREAD_CORE_LOOP);
 
-	host->BootDone();
-	Core_Run();
+	if (g_Config.bBrowse)
+	{
+		PostMessage(MainWindow::GetHWND(), WM_COMMAND, ID_FILE_LOAD, 0);
+		//MainWindow::BrowseAndBoot("");
+	}
 
-	host->PrepareShutdown();
+	Core_EnableStepping(FALSE);
 
+	while (globalUIState != UISTATE_EXIT)
+	{
+		Core_Run();
 
-	PSP_Shutdown();
+		// We're here again, so the game quit.  Restart Core_Run() which controls the UI.
+		// This way they can load a new game.
+		Core_UpdateState(CORE_RUNNING);
+	}
 
 shutdown:
+	_InterlockedExchange(&emuThreadReady, THREAD_SHUTDOWN);
 
+	NativeShutdownGraphics();
+	host = nativeHost;
+	NativeShutdown();
+	host = oldHost;
 	host->ShutdownGL();
 	
+	_InterlockedExchange(&emuThreadReady, THREAD_END);
+
 	//The CPU should return when a game is stopped and cleanup should be done here, 
 	//so we can restart the plugins (or load new ones) for the next game
-	g_State.bEmuThreadStarted = false;
-	_endthreadex(0);
 	return 0;
 }
 

@@ -24,10 +24,16 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <stddef.h>
+#include <stdarg.h>
 
 #ifdef _MSC_VER
 #pragma warning (disable:4100)
+#endif
+
+#ifdef __arm__
+#if !defined(ARM)
+#define ARM
+#endif
 #endif
 
 #if defined(ARM)

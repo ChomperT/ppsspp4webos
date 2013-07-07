@@ -17,8 +17,12 @@
 
 #pragma once
 
-void sceRtcGetCurrentTick();
+struct timeval;
+void __RtcTimeOfDay(timeval *tv);
+
 void Register_sceRtc();
+void __RtcInit();
+void __RtcDoState(PointerWrap &p);
 
 struct ScePspDateTime {
 	unsigned short year;

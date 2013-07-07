@@ -18,89 +18,145 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <map>
+
+#include "CommonTypes.h"
 
 extern const char *PPSSPP_GIT_VERSION;
 
-struct SState
-{
-	bool bEmuThreadStarted;	// is anything loaded into the emulator?
-	bool bBooted;
-};
-
-struct CConfig
+struct Config
 {
 public:
-	CConfig();
-	~CConfig();
+	Config();
+	~Config();
 
 	// Whether to save the config on close.
 	bool bSaveSettings;
 
+	bool bFirstRun;
+
 	// These are broken
 	bool bAutoLoadLast;
-	bool bFirstRun;
 	bool bSpeedLimit;
 	bool bConfirmOnQuit;
 	bool bAutoRun;  // start immediately
 	bool bBrowse;
+#ifdef _WIN32
+	bool bTopMost;
+#endif
+
+	// General
+	bool bNewUI;  // "Hidden" setting, does not get saved to ini file.
+	int iNumWorkerThreads;
 
 	// Core
 	bool bIgnoreBadMemAccess;
 	bool bFastMemory;
 	bool bJit;
+	int iLockedCPUSpeed;
+	bool bAutoSaveSymbolMap;
 	std::string sReportHost;
+	std::vector<std::string> recentIsos;
+	std::string languageIni;
 
 	// GFX
 	bool bDisplayFramebuffer;
 	bool bHardwareTransform;
 	bool bBufferedRendering;
-	bool bDrawWireframe;
-	bool bLinearFiltering;
+	int iTexFiltering; // 1 = off , 2 = nearest , 3 = linear , 4 = linear(CG)
 	bool bUseVBO;
+#ifdef BLACKBERRY
+	bool bPartialStretch;
+#endif
 	bool bStretchToDisplay;
-	int iFrameSkip;  // 0 = off;  1 = auto;  (future:  2 = skip every 2nd frame;  3 = skip every 3rd frame etc).
-	bool bUseMediaEngine;
+	int iVSyncInterval;
+	int iFrameSkip;
 
+	int iWindowX;
+	int iWindowY;
 	int iWindowZoom;  // for Windows
-	bool SSAntiAliasing; //for Windows, too
+	bool SSAntiAliasing; // for Windows, too
 	bool bVertexCache;
 	bool bFullScreen;
 	int iAnisotropyLevel;
 	bool bTrueColor;
+	bool bFramebuffersToMem;
+	bool bFramebuffersCPUConvert; // for OpenGL devices
+	bool bMipMap;
+	int iTexScalingLevel; // 1 = off, 2 = 2x, ..., 5 = 5x
+	int iTexScalingType; // 0 = xBRZ, 1 = Hybrid
+	bool bTexDeposterize;
+	int iFpsLimit;
+	int iForceMaxEmulatedFPS;
+	int iMaxRecent;
+	bool bEnableCheats;
+	bool bReloadCheats;
 
 	// Sound
 	bool bEnableSound;
+	bool bEnableAtrac3plus;
+	int iSEVolume;
+	int iBGMVolume;
 
 	// UI
 	bool bShowTouchControls;
 	bool bShowDebuggerOnLoad;
 	bool bShowAnalogStick;
-	bool bShowFPSCounter;
+	int iShowFPSCounter;
 	bool bShowDebugStats;
 	bool bLargeControls;
 	bool bAccelerometerToAnalogHoriz;
-#ifdef WEBOS
-	bool bLandScape;
-#endif
+	// Temporary until control mapping rewrite
+	// 0 = none
+	// 1 = arrow buttons
+	// 2 = face buttons
+	// 3 = L/R
+	// 4 = L/R + triangle/cross
+	int iRightStickBind;
+	int iSwapRightAxes;
 
 	// Control
-	std::map<int,int> iMappingMap; // Can be used differently depending on systems
+	int iForceInputDevice;
+	int iTouchButtonOpacity;
+	float fButtonScale;
 
 	// SystemParam
+	std::string sNickName;
 	int ilanguage;
-	int itimeformat;
+	int iTimeFormat;
+	int iDateFormat;
+	int iTimeZone;
+	bool bDayLightSavings;
+	int iButtonPreference;
+	int iLockParentalLevel;
 	bool bEncryptSave;
+	int iWlanAdhocChannel;
+	bool bWlanPowerSave;
+
+	// Debugger
+	int iDisasmWindowX;
+	int iDisasmWindowY;
+	int iDisasmWindowW;
+	int iDisasmWindowH;
+	int iConsoleWindowX;
+	int iConsoleWindowY;
 
 	std::string currentDirectory;
+	std::string externalDirectory; 
 	std::string memCardDirectory;
 	std::string flashDirectory;
+	std::string internalDataDirectory;
 
 	void Load(const char *iniFileName = "ppsspp.ini");
 	void Save();
+
+	// Utility functions for "recent" management
+	void AddRecent(const std::string &file);
+	void CleanRecent();
+
 private:
 	std::string iniFilename_;
 };
 
-extern SState g_State;
-extern CConfig g_Config;
+extern Config g_Config;

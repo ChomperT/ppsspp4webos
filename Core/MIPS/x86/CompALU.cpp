@@ -172,10 +172,68 @@ namespace MIPSComp
 		switch (op & 63)
 		{
 		case 22: //clz
-			DISABLE;
+			if (gpr.IsImmediate(rs))
+			{
+				u32 value = gpr.GetImmediate32(rs);
+				int x = 31;
+				int count = 0;
+				while (!(value & (1 << x)) && x >= 0)
+				{
+					count++;
+					x--;
+				}
+				gpr.SetImmediate32(rd, count);
+			}
+			else
+			{
+				gpr.Lock(rd, rs);
+				gpr.BindToRegister(rd, rd == rs, true);
+				BSR(32, EAX, gpr.R(rs));
+				FixupBranch notFound = J_CC(CC_Z);
+
+				MOV(32, gpr.R(rd), Imm32(31));
+				SUB(32, gpr.R(rd), R(EAX));
+				FixupBranch skip = J();
+
+				SetJumpTarget(notFound);
+				MOV(32, gpr.R(rd), Imm32(32));
+
+				SetJumpTarget(skip);
+				gpr.UnlockAll();
+			}
 			break;
 		case 23: //clo
-			DISABLE;
+			if (gpr.IsImmediate(rs))
+			{
+				u32 value = gpr.GetImmediate32(rs);
+				int x = 31;
+				int count = 0;
+				while ((value & (1 << x)) && x >= 0)
+				{
+					count++;
+					x--;
+				}
+				gpr.SetImmediate32(rd, count);
+			}
+			else
+			{
+				gpr.Lock(rd, rs);
+				gpr.BindToRegister(rd, rd == rs, true);
+				MOV(32, R(EAX), gpr.R(rs));
+				NOT(32, R(EAX));
+				BSR(32, EAX, R(EAX));
+				FixupBranch notFound = J_CC(CC_Z);
+
+				MOV(32, gpr.R(rd), Imm32(31));
+				SUB(32, gpr.R(rd), R(EAX));
+				FixupBranch skip = J();
+
+				SetJumpTarget(notFound);
+				MOV(32, gpr.R(rd), Imm32(32));
+
+				SetJumpTarget(skip);
+				gpr.UnlockAll();
+			}
 			break;
 		default:
 			DISABLE;
@@ -711,6 +769,35 @@ namespace MIPSComp
 		}
 	}
 
+	void Jit::Comp_Allegrex2(u32 op)
+	{
+		CONDITIONAL_DISABLE
+		int rt = _RT;
+		int rd = _RD;
+		// Don't change $zr.
+		if (rd == 0)
+			return;
+
+		DISABLE;
+		switch (op & 0x3ff)
+		{
+		case 0xA0: //wsbh
+			gpr.Lock(rd, rt);
+			gpr.BindToRegister(rd, rd == rt, true);
+			// Stub
+			gpr.UnlockAll();
+			break;
+		case 0xE0: //wsbw
+			gpr.Lock(rd, rt);
+			gpr.BindToRegister(rd, rd == rt, true);
+			// Stub
+			gpr.UnlockAll();
+			break;
+		default:
+			Comp_Generic(op);
+			break;
+		}
+	}
 
 	void Jit::Comp_MulDivType(u32 op)
 	{

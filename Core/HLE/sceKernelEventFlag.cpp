@@ -20,6 +20,7 @@
 #include "HLE.h"
 #include "../MIPS/MIPS.h"
 #include "Core/CoreTiming.h"
+#include "Core/Reporting.h"
 #include "ChunkFile.h"
 
 #include "sceKernel.h"
@@ -44,6 +45,7 @@ struct EventFlagTh
 	u32 bits;
 	u32 wait;
 	u32 outAddr;
+	u64 pausedTimeout;
 };
 
 class EventFlag : public KernelObject
@@ -62,6 +64,7 @@ public:
 	static u32 GetMissingErrorCode() {
 		return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
 	}
+	static int GetStaticIDType() { return SCE_KERNEL_TMID_EventFlag; }
 	int GetIDType() const { return SCE_KERNEL_TMID_EventFlag; }
 
 	virtual void DoState(PointerWrap &p)
@@ -69,11 +72,14 @@ public:
 		p.Do(nef);
 		EventFlagTh eft = {0};
 		p.Do(waitingThreads, eft);
+		p.Do(pausedWaits);
 		p.DoMarker("EventFlag");
 	}
 
 	NativeEventFlag nef;
 	std::vector<EventFlagTh> waitingThreads;
+	// Key is the callback id it was for, or if no callback, the thread id.
+	std::map<SceUID, EventFlagTh> pausedWaits;
 };
 
 
@@ -101,9 +107,13 @@ enum PspEventFlagWaitTypes
 
 int eventFlagWaitTimer = -1;
 
+void __KernelEventFlagBeginCallback(SceUID threadID, SceUID prevCallbackId);
+void __KernelEventFlagEndCallback(SceUID threadID, SceUID prevCallbackId, u32 &returnValue);
+
 void __KernelEventFlagInit()
 {
 	eventFlagWaitTimer = CoreTiming::RegisterEvent("EventFlagTimeout", __KernelEventFlagTimeout);
+	__KernelRegisterWaitTypeFuncs(WAITTYPE_EVENTFLAG, __KernelEventFlagBeginCallback, __KernelEventFlagEndCallback);
 }
 
 void __KernelEventFlagDoState(PointerWrap &p)
@@ -151,8 +161,6 @@ bool __KernelUnlockEventFlagForThread(EventFlag *e, EventFlagTh &th, u32 &error,
 	{
 		if (!__KernelEventFlagMatches(&e->nef.currentPattern, th.bits, th.wait, th.outAddr))
 			return false;
-
-		e->nef.numWaitThreads--;
 	}
 	else
 	{
@@ -164,7 +172,7 @@ bool __KernelUnlockEventFlagForThread(EventFlag *e, EventFlagTh &th, u32 &error,
 	if (timeoutPtr != 0 && eventFlagWaitTimer != -1)
 	{
 		// Remove any event for this thread.
-		u64 cyclesLeft = CoreTiming::UnscheduleEvent(eventFlagWaitTimer, th.tid);
+		s64 cyclesLeft = CoreTiming::UnscheduleEvent(eventFlagWaitTimer, th.tid);
 		Memory::Write_U32((u32) cyclesToUs(cyclesLeft), timeoutPtr);
 	}
 
@@ -185,19 +193,120 @@ bool __KernelClearEventFlagThreads(EventFlag *e, int reason)
 	return wokeThreads;
 }
 
+void __KernelEventFlagBeginCallback(SceUID threadID, SceUID prevCallbackId)
+{
+	SceUID pauseKey = prevCallbackId == 0 ? threadID : prevCallbackId;
+
+	u32 error;
+	SceUID flagID = __KernelGetWaitID(threadID, WAITTYPE_EVENTFLAG, error);
+	u32 timeoutPtr = __KernelGetWaitTimeoutPtr(threadID, error);
+	EventFlag *flag = flagID == 0 ? NULL : kernelObjects.Get<EventFlag>(flagID, error);
+	if (flag)
+	{
+
+		// This means two callbacks in a row.  PSP crashes if the same callback runs inside itself.
+		// TODO: Handle this better?
+		if (flag->pausedWaits.find(pauseKey) != flag->pausedWaits.end())
+			return;
+
+		EventFlagTh waitData = {0};
+		for (size_t i = 0; i < flag->waitingThreads.size(); i++)
+		{
+			EventFlagTh *t = &flag->waitingThreads[i];
+			if (t->tid == threadID)
+			{
+				waitData = *t;
+				// TODO: Hmm, what about priority/fifo order?  Does it lose its place in line?
+				flag->waitingThreads.erase(flag->waitingThreads.begin() + i);
+				break;
+			}
+		}
+
+		if (waitData.tid != threadID)
+		{
+			ERROR_LOG_REPORT(HLE, "sceKernelWaitEventFlagCB: wait not found to pause for callback");
+			return;
+		}
+
+		if (timeoutPtr != 0 && eventFlagWaitTimer != -1)
+		{
+			s64 cyclesLeft = CoreTiming::UnscheduleEvent(eventFlagWaitTimer, threadID);
+			waitData.pausedTimeout = CoreTiming::GetTicks() + cyclesLeft;
+		}
+		else
+			waitData.pausedTimeout = 0;
+
+		flag->pausedWaits[pauseKey] = waitData;
+		DEBUG_LOG(HLE, "sceKernelWaitEventFlagCB: Suspending lock wait for callback");
+	}
+	else
+		WARN_LOG_REPORT(HLE, "sceKernelWaitEventFlagCB: beginning callback with bad wait id?");
+}
+
+void __KernelEventFlagEndCallback(SceUID threadID, SceUID prevCallbackId, u32 &returnValue)
+{
+	SceUID pauseKey = prevCallbackId == 0 ? threadID : prevCallbackId;
+
+	u32 error;
+	SceUID flagID = __KernelGetWaitID(threadID, WAITTYPE_EVENTFLAG, error);
+	u32 timeoutPtr = __KernelGetWaitTimeoutPtr(threadID, error);
+	EventFlag *flag = flagID == 0 ? NULL : kernelObjects.Get<EventFlag>(flagID, error);
+	if (!flag || flag->pausedWaits.find(pauseKey) == flag->pausedWaits.end())
+	{
+		// TODO: Since it was deleted, we don't know how long was actually left.
+		// For now, we just say the full time was taken.
+		if (timeoutPtr != 0 && eventFlagWaitTimer != -1)
+			Memory::Write_U32(0, timeoutPtr);
+
+		__KernelResumeThreadFromWait(threadID, SCE_KERNEL_ERROR_WAIT_DELETE);
+		return;
+	}
+
+	EventFlagTh waitData = flag->pausedWaits[pauseKey];
+	u64 waitDeadline = waitData.pausedTimeout;
+	flag->pausedWaits.erase(pauseKey);
+
+	// TODO: Don't wake up if __KernelCurHasReadyCallbacks()?
+
+	bool wokeThreads;
+	// Attempt to unlock.
+	if (__KernelUnlockEventFlagForThread(flag, waitData, error, 0, wokeThreads))
+		return;
+
+	// We only check if it timed out if it couldn't unlock.
+	s64 cyclesLeft = waitDeadline - CoreTiming::GetTicks();
+	if (cyclesLeft < 0 && waitDeadline != 0)
+	{
+		if (timeoutPtr != 0 && eventFlagWaitTimer != -1)
+			Memory::Write_U32(0, timeoutPtr);
+
+		__KernelResumeThreadFromWait(threadID, SCE_KERNEL_ERROR_WAIT_TIMEOUT);
+	}
+	else
+	{
+		if (timeoutPtr != 0 && eventFlagWaitTimer != -1)
+			CoreTiming::ScheduleEvent(cyclesLeft, eventFlagWaitTimer, __KernelGetCurThread());
+
+		// TODO: Should this not go at the end?
+		flag->waitingThreads.push_back(waitData);
+
+		DEBUG_LOG(HLE, "sceKernelWaitEventFlagCB: Resuming lock wait for callback");
+	}
+}
+
 //SceUID sceKernelCreateEventFlag(const char *name, int attr, int bits, SceKernelEventFlagOptParam *opt);
 int sceKernelCreateEventFlag(const char *name, u32 flag_attr, u32 flag_initPattern, u32 optPtr)
 {
 	if (!name)
 	{
-		WARN_LOG(HLE, "%08x=sceKernelCreateEventFlag(): invalid name", SCE_KERNEL_ERROR_ERROR);
+		WARN_LOG_REPORT(HLE, "%08x=sceKernelCreateEventFlag(): invalid name", SCE_KERNEL_ERROR_ERROR);
 		return SCE_KERNEL_ERROR_ERROR;
 	}
 
 	// These attributes aren't valid.
 	if ((flag_attr & 0x100) != 0 || flag_attr >= 0x300)
 	{
-		WARN_LOG(HLE, "%08x=sceKernelCreateEventFlag(): invalid attr parameter: %08x", SCE_KERNEL_ERROR_ILLEGAL_ATTR, flag_attr);
+		WARN_LOG_REPORT(HLE, "%08x=sceKernelCreateEventFlag(): invalid attr parameter: %08x", SCE_KERNEL_ERROR_ILLEGAL_ATTR, flag_attr);
 		return SCE_KERNEL_ERROR_ILLEGAL_ATTR;
 	}
 
@@ -215,9 +324,9 @@ int sceKernelCreateEventFlag(const char *name, u32 flag_attr, u32 flag_initPatte
 	DEBUG_LOG(HLE, "%i=sceKernelCreateEventFlag(\"%s\", %08x, %08x, %08x)", id, e->nef.name, e->nef.attr, e->nef.currentPattern, optPtr);
 
 	if (optPtr != 0)
-		WARN_LOG(HLE, "sceKernelCreateEventFlag(%s) unsupported options parameter: %08x", name, optPtr);
+		WARN_LOG_REPORT(HLE, "sceKernelCreateEventFlag(%s) unsupported options parameter: %08x", name, optPtr);
 	if ((flag_attr & ~PSP_EVENT_WAITMULTIPLE) != 0)
-		WARN_LOG(HLE, "sceKernelCreateEventFlag(%s) unsupported attr parameter: %08x", name, flag_attr);
+		WARN_LOG_REPORT(HLE, "sceKernelCreateEventFlag(%s) unsupported attr parameter: %08x", name, flag_attr);
 
 	return id;
 }
@@ -230,11 +339,11 @@ u32 sceKernelCancelEventFlag(SceUID uid, u32 pattern, u32 numWaitThreadsPtr)
 	EventFlag *e = kernelObjects.Get<EventFlag>(uid, error);
 	if (e)
 	{
+		e->nef.numWaitThreads = (int) e->waitingThreads.size();
 		if (Memory::IsValidAddress(numWaitThreadsPtr))
 			Memory::Write_U32(e->nef.numWaitThreads, numWaitThreadsPtr);
 
 		e->nef.currentPattern = pattern;
-		e->nef.numWaitThreads = 0;
 
 		if (__KernelClearEventFlagThreads(e, SCE_KERNEL_ERROR_WAIT_CANCEL))
 			hleReSchedule("event flag canceled");
@@ -339,7 +448,6 @@ void __KernelEventFlagTimeout(u64 userdata, int cycleslate)
 				// actually running, it will get a DELETE result instead of a TIMEOUT.
 				// So, we need to remember it or we won't be able to mark it DELETE instead later.
 				__KernelUnlockEventFlagForThread(e, *t, error, SCE_KERNEL_ERROR_WAIT_TIMEOUT, wokeThreads);
-				e->nef.numWaitThreads--;
 				break;
 			}
 		}
@@ -382,12 +490,15 @@ int sceKernelWaitEventFlag(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 ti
 
 	if ((wait & ~PSP_EVENT_WAITKNOWN) != 0)
 	{
-		WARN_LOG(HLE, "sceKernelWaitEventFlag(%i) invalid mode parameter: %08x", id, wait);
+		WARN_LOG_REPORT(HLE, "sceKernelWaitEventFlag(%i) invalid mode parameter: %08x", id, wait);
 		return SCE_KERNEL_ERROR_ILLEGAL_MODE;
 	}
 	// Can't wait on 0, that's guaranteed to wait forever.
 	if (bits == 0)
 		return SCE_KERNEL_ERROR_EVF_ILPAT;
+
+	if (!__KernelIsDispatchEnabled())
+		return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
 
 	u32 error;
 	EventFlag *e = kernelObjects.Get<EventFlag>(id, error);
@@ -405,11 +516,10 @@ int sceKernelWaitEventFlag(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 ti
 				timeout = Memory::Read_U32(timeoutPtr);
 
 			// Do we allow more than one thread to wait?
-			if (e->nef.numWaitThreads > 0 && (e->nef.attr & PSP_EVENT_WAITMULTIPLE) == 0)
+			if (e->waitingThreads.size() > 0 && (e->nef.attr & PSP_EVENT_WAITMULTIPLE) == 0)
 				return SCE_KERNEL_ERROR_EVF_MULTI;
 
 			// No match - must wait.
-			e->nef.numWaitThreads++;
 			th.tid = __KernelGetCurThread();
 			th.bits = bits;
 			th.wait = wait;
@@ -435,19 +545,30 @@ int sceKernelWaitEventFlagCB(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 
 
 	if ((wait & ~PSP_EVENT_WAITKNOWN) != 0)
 	{
-		WARN_LOG(HLE, "sceKernelWaitEventFlagCB(%i) invalid mode parameter: %08x", id, wait);
+		WARN_LOG_REPORT(HLE, "sceKernelWaitEventFlagCB(%i) invalid mode parameter: %08x", id, wait);
 		return SCE_KERNEL_ERROR_ILLEGAL_MODE;
 	}
 	// Can't wait on 0, that's guaranteed to wait forever.
 	if (bits == 0)
 		return SCE_KERNEL_ERROR_EVF_ILPAT;
 
+	if (!__KernelIsDispatchEnabled())
+		return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+
 	u32 error;
 	EventFlag *e = kernelObjects.Get<EventFlag>(id, error);
 	if (e)
 	{
 		EventFlagTh th;
-		if (!__KernelEventFlagMatches(&e->nef.currentPattern, bits, wait, outBitsPtr))
+		bool doWait = !__KernelEventFlagMatches(&e->nef.currentPattern, bits, wait, outBitsPtr);
+		bool doCallbackWait = false;
+		if (__KernelCurHasReadyCallbacks())
+		{
+			doWait = true;
+			doCallbackWait = true;
+		}
+
+		if (doWait)
 		{
 			// If this thread was left in waitingThreads after a timeout, remove it.
 			// Otherwise we might write the outBitsPtr in the wrong place.
@@ -458,11 +579,10 @@ int sceKernelWaitEventFlagCB(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 
 				timeout = Memory::Read_U32(timeoutPtr);
 
 			// Do we allow more than one thread to wait?
-			if (e->nef.numWaitThreads > 0 && (e->nef.attr & PSP_EVENT_WAITMULTIPLE) == 0)
+			if (e->waitingThreads.size() > 0 && (e->nef.attr & PSP_EVENT_WAITMULTIPLE) == 0)
 				return SCE_KERNEL_ERROR_EVF_MULTI;
 
 			// No match - must wait.
-			e->nef.numWaitThreads++;
 			th.tid = __KernelGetCurThread();
 			th.bits = bits;
 			th.wait = wait;
@@ -471,7 +591,10 @@ int sceKernelWaitEventFlagCB(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 
 			e->waitingThreads.push_back(th);
 
 			__KernelSetEventFlagTimeout(e, timeoutPtr);
-			__KernelWaitCurThread(WAITTYPE_EVENTFLAG, id, 0, timeoutPtr, true, "event flag waited");
+			if (doCallbackWait)
+				__KernelWaitCallbacksCurThread(WAITTYPE_EVENTFLAG, id, 0, timeoutPtr);
+			else
+				__KernelWaitCurThread(WAITTYPE_EVENTFLAG, id, 0, timeoutPtr, true, "event flag waited");
 		}
 		else
 			hleCheckCurrentCallbacks();
@@ -490,13 +613,13 @@ int sceKernelPollEventFlag(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 ti
 
 	if ((wait & ~PSP_EVENT_WAITKNOWN) != 0)
 	{
-		WARN_LOG(HLE, "sceKernelPollEventFlag(%i) invalid mode parameter: %08x", id, wait);
+		WARN_LOG_REPORT(HLE, "sceKernelPollEventFlag(%i) invalid mode parameter: %08x", id, wait);
 		return SCE_KERNEL_ERROR_ILLEGAL_MODE;
 	}
 	// Poll seems to also fail when CLEAR and CLEARALL are used together, but not wait.
 	if ((wait & PSP_EVENT_WAITCLEAR) != 0 && (wait & PSP_EVENT_WAITCLEARALL) != 0)
 	{
-		WARN_LOG(HLE, "sceKernelPollEventFlag(%i) invalid mode parameter: %08x", id, wait);
+		WARN_LOG_REPORT(HLE, "sceKernelPollEventFlag(%i) invalid mode parameter: %08x", id, wait);
 		return SCE_KERNEL_ERROR_ILLEGAL_MODE;
 	}
 	// Can't wait on 0, it never matches.
@@ -512,7 +635,7 @@ int sceKernelPollEventFlag(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 ti
 			if (Memory::IsValidAddress(outBitsPtr))
 				Memory::Write_U32(e->nef.currentPattern, outBitsPtr);
 
-			if (e->nef.numWaitThreads > 0 && (e->nef.attr & PSP_EVENT_WAITMULTIPLE) == 0)
+			if (e->waitingThreads.size() > 0 && (e->nef.attr & PSP_EVENT_WAITMULTIPLE) == 0)
 				return SCE_KERNEL_ERROR_EVF_MULTI;
 
 			// No match - return that, this is polling, not waiting.
@@ -532,16 +655,32 @@ int sceKernelPollEventFlag(SceUID id, u32 bits, u32 wait, u32 outBitsPtr, u32 ti
 //int sceKernelReferEventFlagStatus(SceUID event, SceKernelEventFlagInfo *status);
 u32 sceKernelReferEventFlagStatus(SceUID id, u32 statusPtr)
 {
-	DEBUG_LOG(HLE, "sceKernelReferEventFlagStatus(%i, %08x)", id, statusPtr);
 	u32 error;
 	EventFlag *e = kernelObjects.Get<EventFlag>(id, error);
 	if (e)
 	{
-		Memory::WriteStruct(statusPtr, &e->nef);
+		DEBUG_LOG(HLE, "sceKernelReferEventFlagStatus(%i, %08x)", id, statusPtr);
+
+		if (!Memory::IsValidAddress(statusPtr))
+			return -1;
+
+		u32 error;
+		for (auto iter = e->waitingThreads.begin(); iter != e->waitingThreads.end(); ++iter)
+		{
+			SceUID waitID = __KernelGetWaitID(iter->tid, WAITTYPE_EVENTFLAG, error);
+			// The thread is no longer waiting for this, clean it up.
+			if (waitID != id)
+				e->waitingThreads.erase(iter--);
+		}
+
+		e->nef.numWaitThreads = (int) e->waitingThreads.size();
+		if (Memory::Read_U32(statusPtr) != 0)
+			Memory::WriteStruct(statusPtr, &e->nef);
 		return 0;
 	}
 	else
 	{
+		ERROR_LOG(HLE, "sceKernelReferEventFlagStatus(%i, %08x): invalid event flag", id, statusPtr);
 		return error;
 	}
 }

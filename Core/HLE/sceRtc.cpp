@@ -24,16 +24,23 @@
 #include <time.h>
 #include "base/timeutil.h"
 
-#include "HLE.h"
-#include "../MIPS/MIPS.h"
+#include "Core/HLE/HLE.h"
+#include "Core/MIPS/MIPS.h"
+#include "Core/Reporting.h"
+#include "Core/CoreTiming.h"
 
-#include "sceKernel.h"
-#include "sceRtc.h"
-#include "../CoreTiming.h"
+#include "Core/HLE/sceKernel.h"
+#include "Core/HLE/sceRtc.h"
+
+// This is a base time that everything is relative to.
+// This way, time doesn't move strangely with savestates, turbo speed, etc.
+static timeval rtcBaseTime;
 
 // Grabbed from JPSCP
-// This is # of microseconds between January 1, 0001 and January 1, 1970.
-const u64 rtcMagicOffset = 62135596800000000L;
+// This is the # of microseconds between January 1, 0001 and January 1, 1970.
+const u64 rtcMagicOffset = 62135596800000000ULL;
+// This is the # of microseconds between January 1, 0001 and January 1, 1601 (for Win32 FILETIME.)
+const u64 rtcFiletimeOffset = 50491123200000000ULL;
 
 const int PSP_TIME_INVALID_YEAR = -1;
 const int PSP_TIME_INVALID_MONTH = -2;
@@ -50,7 +57,7 @@ u64 __RtcGetCurrentTick()
 }
 
 #if defined(_WIN32)
-#define FILETIME_FROM_UNIX_EPOCH_US 11644473600000000ULL
+#define FILETIME_FROM_UNIX_EPOCH_US (rtcMagicOffset - rtcFiletimeOffset)
 
 void gettimeofday(timeval *tv, void *ignore)
 {
@@ -72,7 +79,6 @@ time_t rtc_timegm(struct tm *tm)
 	return _mkgmtime(&modified);
 }
 
-// TODO: Who has timegm?
 #elif defined(__GLIBC__) && !defined(ANDROID)
 #define rtc_timegm timegm
 #else
@@ -99,6 +105,30 @@ time_t rtc_timegm(struct tm *tm)
 }
 
 #endif
+
+void __RtcInit()
+{
+	// This is the base time, the only case we use gettimeofday() for.
+	// Everything else is relative to that, "virtual time."
+	gettimeofday(&rtcBaseTime, NULL);
+}
+
+void __RtcDoState(PointerWrap &p)
+{
+	p.Do(rtcBaseTime);
+
+	p.DoMarker("sceRtc");
+}
+
+void __RtcTimeOfDay(timeval *tv)
+{
+	s64 additionalUs = cyclesToUs(CoreTiming::GetTicks());
+	*tv = rtcBaseTime;
+
+	s64 adjustedUs = additionalUs + tv->tv_usec;
+	tv->tv_sec += long(adjustedUs / 1000000UL);
+	tv->tv_usec = adjustedUs % 1000000UL;
+}
 
 void __RtcTmToPspTime(ScePspDateTime &t, tm *val)
 {
@@ -193,7 +223,7 @@ u32 sceRtcGetCurrentTick(u32 tickPtr)
 	u64 curTick = __RtcGetCurrentTick();
 	if (Memory::IsValidAddress(tickPtr))
 		Memory::Write_U64(curTick, tickPtr);
-
+	hleEatCycles(300);
 	return 0;
 }
 
@@ -207,7 +237,7 @@ u32 sceRtcGetCurrentClock(u32 pspTimePtr, int tz)
 {
 	DEBUG_LOG(HLE, "sceRtcGetCurrentClock(%08x, %d)", pspTimePtr, tz);
 	timeval tv;
-	gettimeofday(&tv, NULL);
+	__RtcTimeOfDay(&tv);
 
 	time_t sec = (time_t) tv.tv_sec;
 	tm *utc = gmtime(&sec);
@@ -228,6 +258,7 @@ u32 sceRtcGetCurrentClock(u32 pspTimePtr, int tz)
 	if (Memory::IsValidAddress(pspTimePtr))
 		Memory::WriteStruct(pspTimePtr, &ret);
 
+	hleEatCycles(1900);
 	return 0;
 }
 
@@ -235,7 +266,7 @@ u32 sceRtcGetCurrentClockLocalTime(u32 pspTimePtr)
 {
 	DEBUG_LOG(HLE, "sceRtcGetCurrentClockLocalTime(%08x)", pspTimePtr);
 	timeval tv;
-	gettimeofday(&tv, NULL);
+	__RtcTimeOfDay(&tv);
 
 	time_t sec = (time_t) tv.tv_sec;
 	tm *local = localtime(&sec);
@@ -252,6 +283,7 @@ u32 sceRtcGetCurrentClockLocalTime(u32 pspTimePtr)
 	if (Memory::IsValidAddress(pspTimePtr))
 		Memory::WriteStruct(pspTimePtr, &ret);
 
+	hleEatCycles(2000);
 	return 0;
 }
 
@@ -591,18 +623,46 @@ int sceRtcGetDosTime(u32 datePtr, u32 dosTime)
 		retValue = -1;
 	}
 	return retValue;
-
 }
 
-int sceRtcSetWin32FileTime(u32 datePtr, u32 win32TimePtr)
+int sceRtcSetWin32FileTime(u32 datePtr, u64 win32Time)
 {
-	ERROR_LOG(HLE, "UNIMPL sceRtcSetWin32FileTime(%d,%d)", datePtr, win32TimePtr);
+	if (!Memory::IsValidAddress(datePtr))
+	{
+		ERROR_LOG_REPORT(HLE, "sceRtcSetWin32FileTime(%08x, %lld): invalid address", datePtr, win32Time);
+		return -1;
+	}
+
+	DEBUG_LOG(HLE, "sceRtcSetWin32FileTime(%08x, %lld)", datePtr, win32Time);
+
+	u64 ticks = (win32Time / 10) + rtcFiletimeOffset;
+	auto pspTime = Memory::GetStruct<ScePspDateTime>(datePtr);
+	__RtcTicksToPspTime(*pspTime, ticks);
 	return 0;
 }
 
 int sceRtcGetWin32FileTime(u32 datePtr, u32 win32TimePtr)
 {
-	ERROR_LOG(HLE, "UNIMPL sceRtcGetWin32FileTime(%d,%d)", datePtr, win32TimePtr);
+	if (!Memory::IsValidAddress(datePtr))
+	{
+		ERROR_LOG_REPORT(HLE, "sceRtcGetWin32FileTime(%08x, %08x): invalid address", datePtr, win32TimePtr);
+		return -1;
+	}
+
+	DEBUG_LOG(HLE, "sceRtcGetWin32FileTime(%08x, %08x)", datePtr, win32TimePtr);
+	if (!Memory::IsValidAddress(win32TimePtr))
+		return SCE_KERNEL_ERROR_INVALID_VALUE;
+
+	auto pspTime = Memory::GetStruct<ScePspDateTime>(datePtr);
+	u64 result = __RtcPspTimeToTicks(*pspTime);
+
+	if (!__RtcValidatePspTime(*pspTime) || result < rtcFiletimeOffset)
+	{
+		Memory::Write_U64(0, win32TimePtr);
+		return SCE_KERNEL_ERROR_INVALID_VALUE;
+	}
+
+	Memory::Write_U64((result - rtcFiletimeOffset) * 10, win32TimePtr);
 	return 0;
 }
 
@@ -793,50 +853,74 @@ int sceRtcTickAddYears(u32 destTickPtr, u32 srcTickPtr, int numYears)
 
 int sceRtcParseDateTime(u32 destTickPtr, u32 dateStringPtr)
 {
-	ERROR_LOG(HLE, "UNIMPL sceRtcParseDateTime(%d,%d)", destTickPtr, dateStringPtr);
+	ERROR_LOG_REPORT(HLE, "UNIMPL sceRtcParseDateTime(%d,%d)", destTickPtr, dateStringPtr);
 	return 0;
+}
+
+int sceRtcGetLastAdjustedTime(u32 tickPtr)
+{
+	u64 curTick = __RtcGetCurrentTick();
+	if (Memory::IsValidAddress(tickPtr))
+		Memory::Write_U64(curTick, tickPtr);
+	DEBUG_LOG(HLE, "sceRtcGetLastAdjustedTime(%d)", tickPtr);
+	return 0;
+}
+
+//Returns 0 on success, according to Project Diva 2nd jpcsptrace log
+int sceRtcSetAlarmTick(u32 unknown1, u32 unknown2)
+{
+	ERROR_LOG(HLE, "UNIMPL sceRtcSetAlarmTick(%x, %x)", unknown1, unknown2);
+	return 0; 
 }
 
 const HLEFunction sceRtc[] =
 {
-	{0xC41C2853, WrapU_V<sceRtcGetTickResolution>, "sceRtcGetTickResolution"},
-	{0x3f7ad767, WrapU_U<sceRtcGetCurrentTick>, "sceRtcGetCurrentTick"},
-	{0x011F03C1, WrapU64_V<sceRtcGetAcculumativeTime>, "sceRtcGetAccumulativeTime"},
-	{0x029CA3B3, WrapU64_V<sceRtcGetAcculumativeTime>, "sceRtcGetAccumlativeTime"},
-	{0x4cfa57b0, WrapU_UI<sceRtcGetCurrentClock>, "sceRtcGetCurrentClock"},
-	{0xE7C27D1B, WrapU_U<sceRtcGetCurrentClockLocalTime>, "sceRtcGetCurrentClockLocalTime"},
-	{0x34885E0D, WrapI_UU<sceRtcConvertUtcToLocalTime>, "sceRtcConvertUtcToLocalTime"},
-	{0x779242A2, WrapI_UU<sceRtcConvertLocalTimeToUTC>, "sceRtcConvertLocalTimeToUTC"},
-	{0x42307A17, WrapU_U<sceRtcIsLeapYear>, "sceRtcIsLeapYear"},
-	{0x05ef322c, WrapU_UU<sceRtcGetDaysInMonth>, "sceRtcGetDaysInMonth"},
-	{0x57726bc1, WrapU_UUU<sceRtcGetDayOfWeek>, "sceRtcGetDayOfWeek"},
-	{0x4B1B5E82, WrapI_U<sceRtcCheckValid>, "sceRtcCheckValid"},
-	{0x3a807cc8, WrapI_UU<sceRtcSetTime_t>, "sceRtcSetTime_t"},
-	{0x27c4594c, WrapI_UU<sceRtcGetTime_t>, "sceRtcGetTime_t"},
-	{0xF006F264, WrapI_UU<sceRtcSetDosTime>, "sceRtcSetDosTime"},
-	{0x36075567, WrapI_UU<sceRtcGetDosTime>, "sceRtcGetDosTime"},
-	{0x7ACE4C04, WrapI_UU<sceRtcSetWin32FileTime>, "sceRtcSetWin32FileTime"},
-	{0xCF561893, WrapI_UU<sceRtcGetWin32FileTime>, "sceRtcGetWin32FileTime"},
-	{0x7ED29E40, WrapU_UU<sceRtcSetTick>, "sceRtcSetTick"},
-	{0x6FF40ACC, WrapU_UU<sceRtcGetTick>, "sceRtcGetTick"},
-	{0x9ED0AE87, WrapI_UU<sceRtcCompareTick>, "sceRtcCompareTick"},
-	{0x44F45E05, WrapI_UUU64<sceRtcTickAddTicks>, "sceRtcTickAddTicks"},
-	{0x26D25A5D, WrapI_UUU64<sceRtcTickAddMicroseconds>, "sceRtcTickAddMicroseconds"},
-	{0xF2A4AFE5, WrapI_UUU64<sceRtcTickAddSeconds>, "sceRtcTickAddSeconds"},
-	{0xE6605BCA, WrapI_UUU64<sceRtcTickAddMinutes>, "sceRtcTickAddMinutes"},
-	{0x26D7A24A, WrapI_UUI<sceRtcTickAddHours>, "sceRtcTickAddHours"},
-	{0xE51B4B7A, WrapI_UUI<sceRtcTickAddDays>, "sceRtcTickAddDays"},
-	{0xCF3A2CA8, WrapI_UUI<sceRtcTickAddWeeks>, "sceRtcTickAddWeeks"},
-	{0xDBF74F1B, WrapI_UUI<sceRtcTickAddMonths>, "sceRtcTickAddMonths"},
-	{0x42842C77, WrapI_UUI<sceRtcTickAddYears>, "sceRtcTickAddYears"},
+	{0xC41C2853, &WrapU_V<sceRtcGetTickResolution>, "sceRtcGetTickResolution"},
+	{0x3f7ad767, &WrapU_U<sceRtcGetCurrentTick>, "sceRtcGetCurrentTick"},
+	{0x011F03C1, &WrapU64_V<sceRtcGetAcculumativeTime>, "sceRtcGetAccumulativeTime"},
+	{0x029CA3B3, &WrapU64_V<sceRtcGetAcculumativeTime>, "sceRtcGetAccumlativeTime"},
+	{0x4cfa57b0, &WrapU_UI<sceRtcGetCurrentClock>, "sceRtcGetCurrentClock"},
+	{0xE7C27D1B, &WrapU_U<sceRtcGetCurrentClockLocalTime>, "sceRtcGetCurrentClockLocalTime"},
+	{0x34885E0D, &WrapI_UU<sceRtcConvertUtcToLocalTime>, "sceRtcConvertUtcToLocalTime"},
+	{0x779242A2, &WrapI_UU<sceRtcConvertLocalTimeToUTC>, "sceRtcConvertLocalTimeToUTC"},
+	{0x42307A17, &WrapU_U<sceRtcIsLeapYear>, "sceRtcIsLeapYear"},
+	{0x05ef322c, &WrapU_UU<sceRtcGetDaysInMonth>, "sceRtcGetDaysInMonth"},
+	{0x57726bc1, &WrapU_UUU<sceRtcGetDayOfWeek>, "sceRtcGetDayOfWeek"},
+	{0x4B1B5E82, &WrapI_U<sceRtcCheckValid>, "sceRtcCheckValid"},
+	{0x3a807cc8, &WrapI_UU<sceRtcSetTime_t>, "sceRtcSetTime_t"},
+	{0x27c4594c, &WrapI_UU<sceRtcGetTime_t>, "sceRtcGetTime_t"},
+	{0xF006F264, &WrapI_UU<sceRtcSetDosTime>, "sceRtcSetDosTime"},
+	{0x36075567, &WrapI_UU<sceRtcGetDosTime>, "sceRtcGetDosTime"},
+	{0x7ACE4C04, &WrapI_UU64<sceRtcSetWin32FileTime>, "sceRtcSetWin32FileTime"},
+	{0xCF561893, &WrapI_UU<sceRtcGetWin32FileTime>, "sceRtcGetWin32FileTime"},
+	{0x7ED29E40, &WrapU_UU<sceRtcSetTick>, "sceRtcSetTick"},
+	{0x6FF40ACC, &WrapU_UU<sceRtcGetTick>, "sceRtcGetTick"},
+	{0x9ED0AE87, &WrapI_UU<sceRtcCompareTick>, "sceRtcCompareTick"},
+	{0x44F45E05, &WrapI_UUU64<sceRtcTickAddTicks>, "sceRtcTickAddTicks"},
+	{0x26D25A5D, &WrapI_UUU64<sceRtcTickAddMicroseconds>, "sceRtcTickAddMicroseconds"},
+	{0xF2A4AFE5, &WrapI_UUU64<sceRtcTickAddSeconds>, "sceRtcTickAddSeconds"},
+	{0xE6605BCA, &WrapI_UUU64<sceRtcTickAddMinutes>, "sceRtcTickAddMinutes"},
+	{0x26D7A24A, &WrapI_UUI<sceRtcTickAddHours>, "sceRtcTickAddHours"},
+	{0xE51B4B7A, &WrapI_UUI<sceRtcTickAddDays>, "sceRtcTickAddDays"},
+	{0xCF3A2CA8, &WrapI_UUI<sceRtcTickAddWeeks>, "sceRtcTickAddWeeks"},
+	{0xDBF74F1B, &WrapI_UUI<sceRtcTickAddMonths>, "sceRtcTickAddMonths"},
+	{0x42842C77, &WrapI_UUI<sceRtcTickAddYears>, "sceRtcTickAddYears"},
 	{0xC663B3B9, 0, "sceRtcFormatRFC2822"},
 	{0x7DE6711B, 0, "sceRtcFormatRFC2822LocalTime"},
 	{0x0498FB3C, 0, "sceRtcFormatRFC3339"},
 	{0x27F98543, 0, "sceRtcFormatRFC3339LocalTime"},
-	{0xDFBC5F16, WrapI_UU<sceRtcParseDateTime>, "sceRtcParseDateTime"},
+	{0xDFBC5F16, &WrapI_UU<sceRtcParseDateTime>, "sceRtcParseDateTime"},
 	{0x28E1E988, 0, "sceRtcParseRFC3339"},
-	{0xe1c93e47, WrapI_UU<sceRtcGetTime64_t>, "sceRtcGetTime64_t"},
-	{0x1909c99b, WrapI_UU64<sceRtcSetTime64_t>, "sceRtcSetTime64_t"},
+	{0xe1c93e47, &WrapI_UU<sceRtcGetTime64_t>, "sceRtcGetTime64_t"},
+	{0x1909c99b, &WrapI_UU64<sceRtcSetTime64_t>, "sceRtcSetTime64_t"},
+	{0x62685E98, &WrapI_U<sceRtcGetLastAdjustedTime>, "sceRtcGetLastAdjustedTime"},
+	{0x203ceb0d, 0, "sceRtcGetLastReincarnatedTime"},
+	{0x7d1fbed3, &WrapI_UU<sceRtcSetAlarmTick>, "sceRtcSetAlarmTick"},
+	{0xf5fcc995, 0, "sceRtc_F5FCC995"},
+	{0x81fcda34, 0, "sceRtcIsAlarmed"},
+	{0xfb3b18cd, 0, "sceRtcRegisterCallback"},
+	{0x6a676d2d, 0, "sceRtcUnregisterCallback"},
+	{0xc2ddbeb5, 0, "sceRtcGetAlarmTick"},
 };
 
 void Register_sceRtc()

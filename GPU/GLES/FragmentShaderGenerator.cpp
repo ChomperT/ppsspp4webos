@@ -62,69 +62,126 @@ static bool IsAlphaTestTriviallyTrue() {
 	}
 }
 
+static bool IsColorTestTriviallyTrue() {
+	int colorTestFunc = gstate.colortest & 3;
+	switch (colorTestFunc) {
+	case GE_COMP_ALWAYS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool CanDoubleSrcBlendMode() {
+	if (!gstate.isAlphaBlendEnabled()) {
+		return false;
+	}
+
+	int funcA = gstate.getBlendFuncA();
+	int funcB = gstate.getBlendFuncB();
+	if (funcA != GE_SRCBLEND_DOUBLESRCALPHA) {
+		funcB = funcA;
+		funcA = gstate.getBlendFuncB();
+	}
+	if (funcA != GE_SRCBLEND_DOUBLESRCALPHA) {
+		return false;
+	}
+
+	// One side should be doubled.  Let's check the other side.
+	// LittleBigPlanet, for example, uses 2.0 * src, 1.0 - src, which can't double.
+	switch (funcB) {
+	case GE_DSTBLEND_SRCALPHA:
+	case GE_DSTBLEND_INVSRCALPHA:
+		return false;
+
+	default:
+		return true;
+	}
+}
+
 
 // Here we must take all the bits of the gstate that determine what the fragment shader will
 // look like, and concatenate them together into an ID.
 void ComputeFragmentShaderID(FragmentShaderID *id) {
 	memset(&id->d[0], 0, sizeof(id->d));
-	bool enableFog = gstate.isFogEnabled() && !gstate.isModeThrough() && !gstate.isModeClear();
-	int lmode = (gstate.lmode & 1) && (gstate.lightingEnable & 1);
-	if (gstate.clearmode & 1) {
+	if (gstate.isModeClear()) {
 		// We only need one clear shader, so let's ignore the rest of the bits.
 		id->d[0] = 1;
 	} else {
-		bool enableAlphaTest = (gstate.alphaTestEnable & 1) && !IsAlphaTestTriviallyTrue();
-		bool enableColorTest = (gstate.colorTestEnable & 1);
+		int lmode = (gstate.lmode & 1) && gstate.isLightingEnabled();
+		bool enableFog = gstate.isFogEnabled() && !gstate.isModeThrough();
+		bool enableAlphaTest = gstate.isAlphaTestEnabled() && !IsAlphaTestTriviallyTrue();
+		bool enableColorTest = gstate.isColorTestEnabled() && !IsColorTestTriviallyTrue();
+		bool enableColorDoubling = (gstate.texfunc & 0x10000) != 0;
+		// This isn't really correct, but it's a hack to get doubled blend modes to work more correctly.
+		bool enableAlphaDoubling = CanDoubleSrcBlendMode();
+		bool doTextureProjection = gstate.getUVGenMode() == 1;
+		bool doTextureAlpha = (gstate.texfunc & 0x100) != 0;
+
+		// All texfuncs except replace are the same for RGB as for RGBA with full alpha.
+		if (gstate_c.textureFullAlpha && (gstate.texfunc & 0x7) != GE_TEXFUNC_REPLACE)
+			doTextureAlpha = false;
+
 		// id->d[0] |= (gstate.clearmode & 1);
-		if (gstate.textureMapEnable & 1) {
+		if (gstate.isTextureMapEnabled()) {
 			id->d[0] |= 1 << 1;
 			id->d[0] |= (gstate.texfunc & 0x7) << 2;
-			id->d[0] |= ((gstate.texfunc & 0x100) >> 8) << 5; // rgb or rgba
-			id->d[0] |= ((gstate.texfunc & 0x10000) >> 16) << 6;	// color double
+			id->d[0] |= (doTextureAlpha & 1) << 5; // rgb or rgba
 		}
 		id->d[0] |= (lmode & 1) << 7;
-		id->d[0] |= (gstate.alphaTestEnable & 1) << 8;
+		id->d[0] |= gstate.isAlphaTestEnabled() << 8;
 		if (enableAlphaTest)
 			id->d[0] |= (gstate.alphatest & 0x7) << 9;	 // alpha test func
-		id->d[0] |= (gstate.colorTestEnable & 1) << 12;
+		id->d[0] |= gstate.isColorTestEnabled() << 12;
 		if (enableColorTest)
 			id->d[0] |= (gstate.colortest & 0x3) << 13;	 // color test func
 		id->d[0] |= (enableFog & 1) << 15;
+		id->d[0] |= (doTextureProjection & 1) << 16;
+		id->d[0] |= (enableColorDoubling & 1) << 17;
+		id->d[0] |= (enableAlphaDoubling & 1) << 18;
 	}
 }
 
-// Missing: Alpha test, color test, Z depth range, fog
+// Missing: Z depth range
 // Also, logic ops etc, of course. Urgh.
-// We could do all this with booleans, but I don't trust the shader compilers on
-// Android devices to be anything but stupid.
 void GenerateFragmentShader(char *buffer) {
 	char *p = buffer;
 
-
 #if defined(GLSL_ES_1_0)
+	WRITE(p, "#version 100\n");  // GLSL ES 1.0
 	WRITE(p, "precision lowp float;\n");
 #elif !defined(FORCE_OPENGL_2_0)
 	WRITE(p, "#version 110\n");
 #endif
 
-	int lmode = (gstate.lmode & 1) && (gstate.lightingEnable & 1);
-
-	int doTexture = (gstate.textureMapEnable & 1) && !(gstate.clearmode & 1);
+	int lmode = (gstate.lmode & 1) && gstate.isLightingEnabled();
+	int doTexture = gstate.isTextureMapEnabled() && !gstate.isModeClear();
 	bool enableFog = gstate.isFogEnabled() && !gstate.isModeThrough() && !gstate.isModeClear();
-	bool enableAlphaTest = (gstate.alphaTestEnable & 1) && !gstate.isModeClear() && !IsAlphaTestTriviallyTrue();
-	bool enableColorTest = (gstate.colorTestEnable & 1) && !gstate.isModeClear();
+	bool enableAlphaTest = gstate.isAlphaTestEnabled() && !IsAlphaTestTriviallyTrue() && !gstate.isModeClear();
+	bool enableColorTest = gstate.isColorTestEnabled() && !IsColorTestTriviallyTrue() && !gstate.isModeClear();
 	bool enableColorDoubling = (gstate.texfunc & 0x10000) != 0;
+	// This isn't really correct, but it's a hack to get doubled blend modes to work more correctly.
+	bool enableAlphaDoubling = CanDoubleSrcBlendMode();
+	bool doTextureProjection = gstate.getUVGenMode() == 1;
+	bool doTextureAlpha = (gstate.texfunc & 0x100) != 0;
 
+	if (gstate_c.textureFullAlpha && (gstate.texfunc & 0x7) != GE_TEXFUNC_REPLACE)
+		doTextureAlpha = false;
 
 	if (doTexture)
 		WRITE(p, "uniform sampler2D tex;\n");
+
 	if (enableAlphaTest || enableColorTest) {
+#if defined(GLSL_ES_1_0)
+		WRITE(p, "uniform mediump vec4 u_alphacolorref;\n");
+#else
 		WRITE(p, "uniform vec4 u_alphacolorref;\n");
+#endif
 		WRITE(p, "uniform vec4 u_colormask;\n");
 	}
-	if (gstate.textureMapEnable & 1) {
+	if (gstate.isTextureMapEnabled()) 
 		WRITE(p, "uniform vec3 u_texenv;\n");
-	}
+	
 	WRITE(p, "varying vec4 v_color0;\n");
 	if (lmode)
 		WRITE(p, "varying vec3 v_color1;\n");
@@ -137,17 +194,26 @@ void GenerateFragmentShader(char *buffer) {
 #endif
 	}
 	if (doTexture)
-		WRITE(p, "varying vec2 v_texcoord;\n");
+	{
+		if (doTextureProjection)
+			WRITE(p, "varying vec3 v_texcoord;\n");
+		else
+			WRITE(p, "varying vec2 v_texcoord;\n");
+	}
+
+	if (enableAlphaTest) {
+		WRITE(p, "float roundAndScaleTo255f(in float x) { return floor(x * 255.0 + 0.5); }\n");
+	}
+	if (enableColorTest) {
+		WRITE(p, "vec3 roundAndScaleTo255v(in vec3 x) { return floor(x * 255.0 + 0.5); }\n");
+	}
 
 	WRITE(p, "void main() {\n");
 
-	if (gstate.clearmode & 1)
-	{
+	if (gstate.isModeClear()) {
 		// Clear mode does not allow any fancy shading.
 		WRITE(p, "  gl_FragColor = v_color0;\n");
-	}
-	else
-	{
+	} else {
 		const char *secondary = "";
 		// Secondary color for specular on top of texture
 		if (lmode) {
@@ -157,37 +223,42 @@ void GenerateFragmentShader(char *buffer) {
 			secondary = "";
 		}
 
-		if (gstate.textureMapEnable & 1) {
-			WRITE(p, "  vec4 t = texture2D(tex, v_texcoord);\n");
+		if (gstate.isTextureMapEnabled()) {
+			if (doTextureProjection) {
+				WRITE(p, "  vec4 t = texture2DProj(tex, v_texcoord);\n");
+			} else {
+				WRITE(p, "  vec4 t = texture2D(tex, v_texcoord);\n");
+			}
 			WRITE(p, "  vec4 p = v_color0;\n");
 
-			if (gstate.texfunc & 0x100) { // texfmt == RGBA
+			if (doTextureAlpha) { // texfmt == RGBA
 				switch (gstate.texfunc & 0x7) {
 				case GE_TEXFUNC_MODULATE:
-					WRITE(p, "  vec4 v = t * p%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = p * t%s;\n", secondary); break;
 				case GE_TEXFUNC_DECAL:
-					WRITE(p, "  vec4 v = vec4(1.0 - t.a * p.rgb + t.a * u_texenv.rgb, p.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(mix(p.rgb, t.rgb, t.a), p.a)%s;\n", secondary); break;
 				case GE_TEXFUNC_BLEND:
-					WRITE(p, "  vec4 v = vec4((1.0 - t.rgb) * p.rgb + t.rgb * u_texenv.rgb, p.a * t.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(mix(p.rgb, u_texenv.rgb, t.rgb), p.a * t.a)%s;\n", secondary); break;
 				case GE_TEXFUNC_REPLACE:
 					WRITE(p, "  vec4 v = t%s;\n", secondary); break;
 				case GE_TEXFUNC_ADD:
-					WRITE(p, "  vec4 v = vec4(t.rgb + p.rgb, p.a * t.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(p.rgb + t.rgb, p.a * t.a)%s;\n", secondary); break;
 				default:
 					WRITE(p, "  vec4 v = p;\n"); break;
 				}
+
 			} else {	// texfmt == RGB
 				switch (gstate.texfunc & 0x7) {
 				case GE_TEXFUNC_MODULATE:
-					WRITE(p, "	vec4 v = vec4(t.rgb * p.rgb, p.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(t.rgb * p.rgb, p.a)%s;\n", secondary); break;
 				case GE_TEXFUNC_DECAL:
-					WRITE(p, "	vec4 v = vec4(t.rgb, p.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(t.rgb, p.a)%s;\n", secondary); break;
 				case GE_TEXFUNC_BLEND:
-					WRITE(p, "	vec4 v = vec4(1.0 - t.rgb) * p.rgb + t.rgb * u_texenv.rgb, p.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(mix(p.rgb, u_texenv.rgb, t.rgb), p.a)%s;\n", secondary); break;
 				case GE_TEXFUNC_REPLACE:
-					WRITE(p, "	vec4 v = vec4(t.rgb, p.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(t.rgb, p.a)%s;\n", secondary); break;
 				case GE_TEXFUNC_ADD:
-					WRITE(p, "	vec4 v = vec4(t.rgb + p.rgb, p.a)%s;\n", secondary); break;
+					WRITE(p, "  vec4 v = vec4(p.rgb + t.rgb, p.a)%s;\n", secondary); break;
 				default:
 					WRITE(p, "  vec4 v = p;\n"); break;
 				}
@@ -197,27 +268,31 @@ void GenerateFragmentShader(char *buffer) {
 			WRITE(p, "  vec4 v = v_color0 %s;\n", secondary);
 		}
 
-		if (enableColorDoubling) {
-			WRITE(p, "  v = v * 2.0;\n");
-		}
-
 		if (enableAlphaTest) {
 			int alphaTestFunc = gstate.alphatest & 7;
 			const char *alphaTestFuncs[] = { "#", "#", " != ", " == ", " >= ", " > ", " <= ", " < " };	// never/always don't make sense
-			if (alphaTestFuncs[alphaTestFunc][0] != '#')
-				WRITE(p, "  if (v.a %s u_alphacolorref.a) discard;\n", alphaTestFuncs[alphaTestFunc]);
+			if (alphaTestFuncs[alphaTestFunc][0] != '#') {
+				WRITE(p, "  if (roundAndScaleTo255f(v.a) %s u_alphacolorref.a) discard;\n", alphaTestFuncs[alphaTestFunc]);
+			}
 		}
 
-		// Disabled for now until we actually find a need for it.
-		/*
+		// TODO: Before or after the color test?
+		if (enableColorDoubling && enableAlphaDoubling) {
+			WRITE(p, "  v = v * 2.0;\n");
+		} else if (enableColorDoubling) {
+			WRITE(p, "  v.rgb = v.rgb * 2.0;\n");
+		} else if (enableAlphaDoubling) {
+			WRITE(p, "  v.a = v.a * 2.0;\n");
+		}
+		
 		if (enableColorTest) {
-			// TODO: There are some colortestmasks we could handle.
 			int colorTestFunc = gstate.colortest & 3;
-			const char *colorTestFuncs[] = { "#", "#", " == ", " != " };	// never/always don't make sense}
+			const char *colorTestFuncs[] = { "#", "#", " != ", " == " };	// never/always don't make sense
 			int colorTestMask = gstate.colormask;
-			if (colorTestFuncs[colorTestFunc][0] != '#')
-				WRITE(p, "if (!(v.rgb %s (u_alphacolorref.rgb & u_colormask.rgb)) discard;\n", colorTestFuncs[colorTestFunc]);
-		}*/	
+			if (colorTestFuncs[colorTestFunc][0] != '#') {
+				WRITE(p, "if (roundAndScaleTo255v(v.rgb) %s u_alphacolorref.rgb) discard;\n", colorTestFuncs[colorTestFunc]);
+			}
+		}
 
 		if (enableFog) {
 			WRITE(p, "  float fogCoef = clamp(v_fogdepth, 0.0, 1.0);\n");
@@ -230,7 +305,8 @@ void GenerateFragmentShader(char *buffer) {
 
 #ifdef DEBUG_SHADER
 	if (doTexture) {
-		WRITE(p, "  gl_FragColor = texture2D(tex, v_texcoord);\n");
+		WRITE(p, "  gl_FragColor = texture2D(tex, v_texcoord.xy);\n");
+		WRITE(p, "  gl_FragColor += vec4(0.3,0,0.3,0.3);\n");
 	} else {
 		WRITE(p, "  gl_FragColor = vec4(1,0,1,1);\n");
 	}

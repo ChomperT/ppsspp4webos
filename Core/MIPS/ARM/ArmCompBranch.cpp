@@ -14,17 +14,21 @@
 
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
-#include "../../HLE/HLE.h"
 
-#include "../MIPS.h"
-#include "../MIPSCodeUtils.h"
-#include "../MIPSAnalyst.h"
-#include "../MIPSTables.h"
+#include "Core/Reporting.h"
 
-#include "ArmJit.h"
-#include "ArmRegCache.h"
-#include "ArmJitCache.h"
-#include <ArmEmitter.h>
+#include "Core/HLE/HLE.h"
+
+#include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MIPSCodeUtils.h"
+#include "Core/MIPS/MIPSAnalyst.h"
+#include "Core/MIPS/MIPSTables.h"
+
+#include "Core/MIPS/ARM/ArmJit.h"
+#include "Core/MIPS/ARM/ArmRegCache.h"
+#include "Core/MIPS/JitCommon/JitBlockCache.h"
+
+#include "Common/ArmEmitter.h"
 
 #define _RS ((op>>21) & 0x1F)
 #define _RT ((op>>16) & 0x1F)
@@ -49,7 +53,7 @@ namespace MIPSComp
 void Jit::BranchRSRTComp(u32 op, ArmGen::CCFlags cc, bool likely)
 {
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in RSRTComp delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op&0xFFFF)<<2;
@@ -109,7 +113,7 @@ void Jit::BranchRSRTComp(u32 op, ArmGen::CCFlags cc, bool likely)
 void Jit::BranchRSZeroComp(u32 op, ArmGen::CCFlags cc, bool andLink, bool likely)
 {
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in RSZeroComp delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op&0xFFFF)<<2;
@@ -204,7 +208,7 @@ void Jit::Comp_RelBranchRI(u32 op)
 void Jit::BranchFPFlag(u32 op, ArmGen::CCFlags cc, bool likely)
 {
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in FPFlag delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int offset = (signed short)(op & 0xFFFF) << 2;
@@ -261,6 +265,10 @@ void Jit::Comp_FPUBranch(u32 op)
 // If likely is set, discard the branch slot if NOT taken.
 void Jit::BranchVFPUFlag(u32 op, ArmGen::CCFlags cc, bool likely)
 {
+	if (js.inDelaySlot) {
+		ERROR_LOG_REPORT(JIT, "Branch in VFPU delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
+		return;
+	}
 	int offset = (signed short)(op & 0xFFFF) << 2;
 	u32 targetAddr = js.compilerPC + offset + 4;
 
@@ -318,7 +326,7 @@ void Jit::Comp_VBranch(u32 op)
 void Jit::Comp_Jump(u32 op)
 {
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in Jump delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	u32 off = ((op & 0x03FFFFFF) << 2);
@@ -350,7 +358,7 @@ void Jit::Comp_Jump(u32 op)
 void Jit::Comp_JumpReg(u32 op)
 {
 	if (js.inDelaySlot) {
-		ERROR_LOG(JIT, "Branch in delay slot at %08x", js.compilerPC);
+		ERROR_LOG_REPORT(JIT, "Branch in JumpReg delay slot at %08x in block starting at %08x", js.compilerPC, js.blockStart);
 		return;
 	}
 	int rs = _RS;

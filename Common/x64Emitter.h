@@ -735,7 +735,7 @@ public:
 		region_size = 0;
 	}
 
-	bool IsInCodeSpace(u8 *ptr)
+	bool IsInSpace(u8 *ptr)
 	{
 		return ptr >= region && ptr < region + region_size;
 	}
@@ -755,6 +755,14 @@ public:
 	size_t GetSpaceLeft() const
 	{
 		return region_size - (GetCodePtr() - region);
+	}
+
+	u8 *GetBasePtr() {
+		return region;
+	}
+
+	size_t GetOffset(u8 *ptr) {
+		return ptr - region;
 	}
 };
 
