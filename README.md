@@ -11,7 +11,10 @@ by Chomper
 Build Instruction
 -----------------
 
-To build this, you require: [WEBOS PDK][pdk-url]
+To build this, you require: 
+
+	[WebOS PDK][pdk-url] or [toolchain4webos][toolchain]
+
 
 command:
 
@@ -27,4 +30,5 @@ To make ipk package you can use: [ipk-packager][ipk-packager]
 [ipk-packager]: <https://code.google.com/p/ipk-packager>
 [pdk-url]: <https://developer.palm.com/content/resources/develop/sdk_pdk_download.html>
 [ppsspp]: <https://github.com/hrydgard/ppsspp>
+[toolchain]: <https://github.com/ChomperT/toolchain4webos>
 
