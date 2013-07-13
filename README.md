@@ -13,11 +13,11 @@ Build Instruction
 
 To build this, you require: 
 
-	[WebOS PDK][pdk-url]
+[WebOS PDK][pdk-url]
 
-	or 
+or
 
-	[toolchain4webos][toolchain]
+[toolchain4webos][toolchain]
 
 
 command:
